@@ -8,16 +8,9 @@ export default function LicenseGuard({ children }) {
   const navigate = useNavigate()
   const user = useAuth((s) => s.user)
 
-  // Admin detection — multiple ways
-  const isAdmin = 
-    user?.username === 'admin' ||
-    user?.roles?.some?.(r => {
-      // roles can be IDs (numbers) or names (strings) depending on backend
-      if (typeof r === 'string') return r.toLowerCase() === 'admin'
-      if (typeof r === 'number') return r === 1  // seed me admin ka ID = 1
-      if (typeof r === 'object') return r.name?.toLowerCase() === 'admin'
-      return false
-    })
+  const isSuperAdmin =
+    user?.isSuperAdmin === true ||
+    (user?.roleNames || []).some(r => String(r).toLowerCase() === 'superadmin')
 
   const check = async () => {
     try {
@@ -69,14 +62,9 @@ export default function LicenseGuard({ children }) {
             Please contact your administrator to renew the license.
           </p>
 
-          {isAdmin ? (
+          {isSuperAdmin ? (
             <button
-              onClick={() => {
-                // Force allow navigation to /license even though license is invalid
-                navigate('/license')
-                // Trigger re-check after route change
-                setTimeout(() => window.dispatchEvent(new Event('license-changed')), 100)
-              }}
+              onClick={() => navigate('/license')}
               style={{
                 padding: '13px 28px', border: 'none', borderRadius: 10,
                 background: 'white', color: '#7f1d1d',

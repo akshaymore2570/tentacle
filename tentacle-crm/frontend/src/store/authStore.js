@@ -12,7 +12,7 @@ export const useAuth = create((set) => ({
       const { data } = await api.post('/auth/login', { username, password })
       localStorage.setItem('tentacle_token', data.token)
       set({ token: data.token, user: data.user, loading: false })
-      return { ok: true }
+      return { ok: true, user: data.user }
     } catch (e) {
       set({ loading: false })
       return { ok: false, error: e.response?.data?.error || 'Login failed' }

@@ -13,6 +13,11 @@ export const DEFAULT_APP_THEME = {
   gradC1: '#ffffff',
   gradC2: '#2c5f9e',
   gradDir: '135deg',
+  // ★ NEW: Typography
+  fontFamily: "'Inter', system-ui, sans-serif",
+  fontSize: '14px',
+  lineHeight: '1.5',
+  headingWeight: '600',
 }
 
 function hexToRgb(hex) {
@@ -51,6 +56,17 @@ export function applyThemeToDOM(theme) {
   root.style.setProperty('--bg-gradient-c1', theme.gradC1)
   root.style.setProperty('--bg-gradient-c2', theme.gradC2)
   root.style.setProperty('--bg-gradient-dir', theme.gradDir)
+
+  // ★ Typography
+  root.style.setProperty('--font-family', theme.fontFamily || "'Inter', system-ui, sans-serif")
+  root.style.setProperty('--font-size-base', theme.fontSize || '14px')
+  root.style.setProperty('--line-height-base', theme.lineHeight || '1.5')
+  root.style.setProperty('--heading-weight', theme.headingWeight || '600')
+
+  // Also update body
+  document.body.style.fontFamily = theme.fontFamily || "'Inter', system-ui, sans-serif"
+  document.body.style.fontSize = theme.fontSize || '14px'
+  document.body.style.lineHeight = theme.lineHeight || '1.5'
 
   if (theme.bgMode === 'gradient') document.body.classList.add('gradient-bg')
   else document.body.classList.remove('gradient-bg')

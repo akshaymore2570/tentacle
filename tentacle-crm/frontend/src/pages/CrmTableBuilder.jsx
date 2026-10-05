@@ -1,0 +1,497 @@
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import api from '../api'
+
+const INTERACTIONS = ['Call', 'Email', 'Facebook', 'SMS', 'Twitter', 'Instagram', 'Viber', 'Chat', 'WhatsApp', 'Video Chat']
+const TYPES = ['varchar', 'int', 'bigint', 'text', 'boolean', 'date', 'timestamp', 'numeric']
+
+const emptyRow = () => ({
+  name: '', type: 'varchar', primaryKey: false, mask: false,
+  updateTimestamp: false, _selected: false,
+})
+
+export default function CrmTableBuilder({ showToast }) {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const isEdit = id && id !== 'new'
+
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [interactions, setInteractions] = useState([])
+  const [phoneColumnName, setPhoneColumnName] = useState('phone')
+  const [phoneColumnCount, setPhoneColumnCount] = useState(1)
+  const [columns, setColumns] = useState([emptyRow()])
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!isEdit) return
+    api.get('/crm-tables/' + id).then(({ data }) => {
+      setName(data.name)
+      setDescription(data.description || '')
+      setInteractions(data.interactions || [])
+      setPhoneColumnName(data.phoneColumnName || 'phone')
+      setPhoneColumnCount(data.phoneColumnCount || 1)
+      setColumns(data.columns?.length ? data.columns.map(c => ({ ...emptyRow(), ...c })) : [emptyRow()])
+    }).catch(() => {
+      showToast && showToast('Table not found')
+      navigate('/crm-table')
+    })
+  }, [id])
+
+  const toggleInteraction = (val) =>
+    setInteractions(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val])
+
+  const updateCol = (i, patch) =>
+    setColumns(prev => prev.map((c, idx) => idx === i ? { ...c, ...patch } : c))
+
+  const addCol = () => setColumns(prev => [...prev, emptyRow()])
+
+  const removeSelectedCols = () => {
+    const remaining = columns.filter(c => !c._selected)
+    if (remaining.length === 0) return showToast && showToast('At least one column required')
+    setColumns(remaining)
+  }
+
+  const save = async () => {
+    if (!name.trim()) return showToast && showToast('Table Name required')
+
+    const cleanCols = columns.map(c => ({
+      name: c.name?.trim(), type: c.type,
+      primaryKey: !!c.primaryKey, mask: !!c.mask, updateTimestamp: !!c.updateTimestamp,
+    })).filter(c => c.name)
+
+    if (cleanCols.length === 0) return showToast && showToast('Add at least one column')
+
+    setSaving(true)
+    try {
+      const payload = {
+        name: name.trim(), displayName: name.trim(),
+        description: description.trim(), interactions,
+        phoneColumnName, phoneColumnCount: parseInt(phoneColumnCount) || 1,
+        columns: cleanCols,
+      }
+      let res
+      if (isEdit) res = await api.put('/crm-tables/' + id, payload)
+      else res = await api.post('/crm-tables', payload)
+      showToast && showToast('Table "' + res.data.stagingTable + '" created')
+      navigate('/crm-table')
+    } catch (e) {
+      showToast && showToast(e.response?.data?.error || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const stagingTable = name ? name + '_stagging' : '—'
+
+  // Common styles using theme variables
+  const inputStyle = {
+    width: '100%',
+    padding: '13px 16px',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    fontSize: '0.92rem',
+    fontFamily: 'inherit',
+    background: 'var(--surface)',
+    color: 'var(--text)',
+    outline: 'none',
+    transition: 'border-color 0.15s, box-shadow 0.15s',
+  }
+
+  const labelStyle = {
+    display: 'block',
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: 'var(--text)',
+    marginBottom: 8,
+  }
+
+  const requiredStar = { color: 'var(--danger)' }
+
+  return (
+    <div style={{
+      minHeight: '100%',
+      background: 'var(--bg)',
+      padding: '28px 40px 60px',
+      color: 'var(--text)',
+    }}>
+
+      {/* ============ HEADER ============ */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        marginBottom: 28, paddingBottom: 20,
+        borderBottom: '1px solid var(--border)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{
+            width: 42, height: 42, borderRadius: 10,
+            background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'white', fontSize: '1.1rem',
+            boxShadow: '0 4px 12px rgba(44,95,158,0.25)',
+          }}>
+            <i className="fas fa-database"></i>
+          </div>
+          <h1 style={{
+            fontSize: '1.5rem', fontWeight: 700, color: 'var(--text)',
+            letterSpacing: '-0.02em', margin: 0,
+          }}>
+            {isEdit ? 'Edit CRM Table' : 'Create CRM Table'}
+          </h1>
+        </div>
+
+        <button
+          onClick={save}
+          disabled={saving}
+          style={{
+            padding: '10px 26px', border: 'none', borderRadius: 8,
+            background: saving
+              ? 'var(--border)'
+              : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+            color: 'white', fontWeight: 700, fontSize: '0.9rem',
+            cursor: saving ? 'not-allowed' : 'pointer',
+            boxShadow: '0 2px 8px rgba(44,95,158,0.35)',
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            transition: 'all 0.15s',
+          }}
+        >
+          {saving
+            ? <><i className="fas fa-spinner fa-spin"></i> Saving...</>
+            : <><i className="fas fa-check"></i> {isEdit ? 'Update' : 'Create'}</>}
+        </button>
+      </div>
+
+      {/* ============ TABLE NAME ============ */}
+      <div style={{ marginBottom: 26 }}>
+        <label style={labelStyle}>
+          Table Name <span style={requiredStar}>*</span>
+        </label>
+        <input
+          value={name}
+          disabled={isEdit}
+          onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
+          placeholder="e.g. dcugrade"
+          style={{
+            ...inputStyle,
+            background: isEdit ? 'var(--primary-light)' : 'var(--surface)',
+          }}
+          onFocus={(e) => {
+            e.target.style.borderColor = 'var(--primary)'
+            e.target.style.boxShadow = '0 0 0 3px var(--primary-light)'
+          }}
+          onBlur={(e) => {
+            e.target.style.borderColor = 'var(--border)'
+            e.target.style.boxShadow = 'none'
+          }}
+        />
+        <div style={{
+          fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 6,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <i className="fas fa-info-circle" style={{ color: 'var(--primary)' }}></i>
+          Table identifier:&nbsp;
+          <strong style={{
+            color: 'var(--primary)', fontFamily: 'monospace',
+            background: 'var(--primary-light)', padding: '2px 8px', borderRadius: 4,
+          }}>
+            {stagingTable}
+          </strong>
+        </div>
+      </div>
+
+      {/* ============ DESCRIPTION ============ */}
+      <div style={{ marginBottom: 26 }}>
+        <label style={labelStyle}>Description</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="What is this table for..."
+          rows={3}
+          style={{
+            ...inputStyle,
+            resize: 'vertical',
+            minHeight: 80,
+          }}
+          onFocus={(e) => {
+            e.target.style.borderColor = 'var(--primary)'
+            e.target.style.boxShadow = '0 0 0 3px var(--primary-light)'
+          }}
+          onBlur={(e) => {
+            e.target.style.borderColor = 'var(--border)'
+            e.target.style.boxShadow = 'none'
+          }}
+        />
+      </div>
+
+      {/* ============ INTERACTIONS ============ */}
+      <div style={{ marginBottom: 26 }}>
+        <div style={{
+          fontSize: '0.85rem', fontWeight: 700, color: 'var(--text)',
+          marginBottom: 12, textAlign: 'center',
+        }}>
+          Selected Interactions <span style={requiredStar}>*</span>
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+          gap: 14, padding: '20px 24px',
+          background: 'var(--surface)', borderRadius: 10,
+          border: '1px solid var(--border)',
+        }}>
+          {INTERACTIONS.map(i => (
+            <label key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              fontSize: '0.86rem', fontWeight: 600,
+              color: 'var(--text)', cursor: 'pointer',
+              padding: '6px 4px', borderRadius: 6,
+              transition: 'background 0.15s',
+            }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--primary-light)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              <input
+                type="checkbox"
+                checked={interactions.includes(i)}
+                onChange={() => toggleInteraction(i)}
+                style={{
+                  width: 18, height: 18,
+                  accentColor: 'var(--primary)',
+                  cursor: 'pointer',
+                }}
+              />
+              {i}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* ============ PHONE COLUMNS ============ */}
+      <div style={{ marginBottom: 26 }}>
+        <div style={{
+          fontSize: '0.85rem', fontWeight: 700, color: 'var(--text)',
+          marginBottom: 12, textAlign: 'center',
+        }}>
+          Enter No. of Phone Columns
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+          <div>
+            <label style={labelStyle}>
+              Column Name <span style={requiredStar}>*</span>
+            </label>
+            <input
+              value={phoneColumnName}
+              onChange={(e) => setPhoneColumnName(e.target.value)}
+              style={inputStyle}
+              onFocus={(e) => {
+                e.target.style.borderColor = 'var(--primary)'
+                e.target.style.boxShadow = '0 0 0 3px var(--primary-light)'
+              }}
+              onBlur={(e) => {
+                e.target.style.borderColor = 'var(--border)'
+                e.target.style.boxShadow = 'none'
+              }}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>
+              No. <span style={requiredStar}>*</span>
+            </label>
+            <input
+              type="number" min="1" max="20"
+              value={phoneColumnCount}
+              onChange={(e) => setPhoneColumnCount(e.target.value)}
+              style={inputStyle}
+              onFocus={(e) => {
+                e.target.style.borderColor = 'var(--primary)'
+                e.target.style.boxShadow = '0 0 0 3px var(--primary-light)'
+              }}
+              onBlur={(e) => {
+                e.target.style.borderColor = 'var(--border)'
+                e.target.style.boxShadow = 'none'
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ============ COLUMNS SECTION ============ */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          marginBottom: 14,
+        }}>
+          <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text)' }}>
+            Columns <span style={requiredStar}>*</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={addCol}
+              style={{
+                padding: '8px 18px', border: 'none', borderRadius: 6,
+                background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                color: 'white', fontWeight: 700, fontSize: '0.8rem',
+                cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+                boxShadow: '0 2px 6px rgba(44,95,158,0.3)',
+              }}
+            >
+              <i className="fas fa-plus"></i> Add
+            </button>
+            <button
+              onClick={removeSelectedCols}
+              style={{
+                padding: '8px 18px', border: 'none', borderRadius: 6,
+                background: 'var(--danger)',
+                color: 'white', fontWeight: 700, fontSize: '0.8rem',
+                cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+                boxShadow: '0 2px 6px rgba(231,76,60,0.3)',
+              }}
+            >
+              <i className="fas fa-trash"></i> Delete
+            </button>
+          </div>
+        </div>
+
+        {/* Columns Table */}
+        <div style={{
+          background: 'var(--surface)', borderRadius: 10,
+          border: '1px solid var(--border)', overflow: 'hidden',
+        }}>
+          {/* Header */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '50px 2fr 1.3fr 1fr 0.8fr 0.8fr',
+            gap: 16, padding: '14px 20px',
+            background: 'var(--primary-light)',
+            borderBottom: '1px solid var(--border)',
+            fontSize: '0.72rem', fontWeight: 800,
+            textTransform: 'uppercase', letterSpacing: 0.6,
+            color: 'var(--text-muted)',
+          }}>
+            <div></div>
+            <div>Column Name <span style={requiredStar}>*</span></div>
+            <div>Type <span style={requiredStar}>*</span></div>
+            <div style={{ textAlign: 'center' }}>Update TS</div>
+            <div style={{ textAlign: 'center' }}>Mask</div>
+            <div style={{ textAlign: 'center' }}>Primary</div>
+          </div>
+
+          {/* Rows */}
+          {columns.map((c, i) => (
+            <div key={i} style={{
+              display: 'grid',
+              gridTemplateColumns: '50px 2fr 1.3fr 1fr 0.8fr 0.8fr',
+              gap: 16, padding: '12px 20px',
+              alignItems: 'center',
+              borderBottom: i < columns.length - 1 ? '1px solid var(--border)' : 'none',
+              background: c._selected ? 'var(--primary-light)' : 'var(--surface)',
+              transition: 'background 0.15s',
+            }}>
+              <input
+                type="checkbox"
+                checked={c._selected || false}
+                onChange={() => updateCol(i, { _selected: !c._selected })}
+                style={{ width: 17, height: 17, accentColor: 'var(--primary)', cursor: 'pointer' }}
+              />
+
+              <input
+                value={c.name}
+                onChange={(e) => updateCol(i, { name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '_') })}
+                placeholder="column_name"
+                style={{
+                  padding: '10px 12px',
+                  border: '1px solid var(--border)', borderRadius: 6,
+                  fontSize: '0.86rem', fontFamily: 'monospace',
+                  background: 'var(--surface)', color: 'var(--text)', outline: 'none',
+                }}
+                onFocus={(e) => e.target.style.borderColor = 'var(--primary)'}
+                onBlur={(e) => e.target.style.borderColor = 'var(--border)'}
+              />
+
+              <select
+                value={c.type}
+                onChange={(e) => updateCol(i, { type: e.target.value })}
+                style={{
+                  padding: '10px 12px',
+                  border: '1px solid var(--border)', borderRadius: 6,
+                  fontSize: '0.86rem', fontFamily: 'inherit',
+                  background: 'var(--surface)', color: 'var(--text)', outline: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={!!c.updateTimestamp}
+                  onChange={(e) => updateCol(i, { updateTimestamp: e.target.checked })}
+                  style={{ width: 17, height: 17, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={!!c.mask}
+                  onChange={(e) => updateCol(i, { mask: e.target.checked })}
+                  style={{ width: 17, height: 17, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={!!c.primaryKey}
+                  onChange={(e) => updateCol(i, { primaryKey: e.target.checked })}
+                  style={{ width: 17, height: 17, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ============ BOTTOM ACTIONS ============ */}
+      <div style={{
+        display: 'flex', justifyContent: 'flex-end', gap: 12,
+        marginTop: 32, paddingTop: 24,
+        borderTop: '1px solid var(--border)',
+      }}>
+        <button
+          onClick={() => navigate('/crm-table')}
+          style={{
+            padding: '11px 30px', border: '1px solid var(--border)',
+            background: 'var(--surface)', color: 'var(--text)',
+            borderRadius: 8, fontWeight: 600, fontSize: '0.88rem',
+            cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--primary)'}
+          onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border)'}
+        >
+          <i className="fas fa-times"></i> Cancel
+        </button>
+        <button
+          onClick={save}
+          disabled={saving}
+          style={{
+            padding: '11px 32px', border: 'none',
+            background: saving
+              ? 'var(--border)'
+              : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+            color: 'white', borderRadius: 8, fontWeight: 700,
+            fontSize: '0.88rem', cursor: saving ? 'not-allowed' : 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            boxShadow: '0 2px 10px rgba(44,95,158,0.35)',
+            transition: 'all 0.15s',
+          }}
+        >
+          {saving
+            ? <><i className="fas fa-spinner fa-spin"></i> Saving...</>
+            : <><i className="fas fa-check"></i> {isEdit ? 'Update Table' : 'Create Table'}</>}
+        </button>
+      </div>
+    </div>
+  )
+}

@@ -18,3 +18,8 @@ class Config:
         f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+
+class SuperAdminConfig:
+    USERNAME = os.getenv("SUPERADMIN_USERNAME", "superadmin")
+    PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "SuperAdmin@2025")

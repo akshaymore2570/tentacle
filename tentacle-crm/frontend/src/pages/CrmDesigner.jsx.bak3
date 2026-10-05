@@ -1,0 +1,742 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import api from '../api'
+import CrmThemePanel, { DEFAULT_CRM_THEME, adjustColor } from '../components/CrmThemePanel'
+
+const TOOLS = [
+  { cat: 'Basic', items: [
+    { type: 'HEADING', icon: 'fa-heading' },
+    { type: 'INPUT FIELD', icon: 'fa-i-cursor' },
+    { type: 'TEXT AREA', icon: 'fa-align-left' },
+  ]},
+  { cat: 'Selection', items: [
+    { type: 'SELECT BOX', icon: 'fa-caret-square-down' },
+    { type: 'RADIO BUTTON', icon: 'fa-dot-circle' },
+    { type: 'CHECKBOX', icon: 'fa-check-square' },
+  ]},
+  { cat: 'Date', items: [
+    { type: 'DATE FIELD', icon: 'fa-calendar-alt' },
+    { type: 'DATETIME FIELD', icon: 'fa-clock' },
+  ]},
+  { cat: 'Actions', items: [
+    { type: 'SUBMIT BUTTON', icon: 'fa-check-square' },
+    { type: 'DIAL BUTTON', icon: 'fa-phone-alt' },
+  ]},
+]
+
+let uid = 1
+const nextId = () => `f${uid++}_${Date.now()}`
+
+function defaultField(type) {
+  return {
+    id: nextId(),
+    type,
+    label: '',
+    placeholder: '',
+    required: false,
+    value: '',
+    options: '',
+    floating: true,
+    x: 20, y: 20, w: 260, h: 90,
+    targetTable: '',
+    targetColumn: '',
+  }
+}
+
+function FieldControl({ field, onChange, theme }) {
+  const t = field.type
+  const inputStyle = {
+    flex: 1,
+    padding: theme.fieldSize === 'small' ? '6px 10px' : theme.fieldSize === 'large' ? '13px 16px' : '9px 12px',
+    fontSize: theme.fieldSize === 'small' ? '0.78rem' : theme.fieldSize === 'large' ? '0.95rem' : '0.85rem',
+    border: `1px solid ${theme.fieldBorder}`,
+    borderRadius: `${theme.fieldRadius}px`,
+    background: theme.fieldBg,
+    color: theme.fieldText,
+    fontFamily: 'inherit',
+    outline: 'none',
+    width: '100%',
+  }
+
+  if (t === 'TEXT AREA' || t === 'COMMENTS') {
+    return <textarea placeholder={field.placeholder || 'Enter text...'} value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={{ ...inputStyle, minHeight: 60, resize: 'vertical' }} />
+  }
+
+  if (['SELECT BOX','SELECT CHILD BOX','SELECT PHONE','DISPOSITION COMBO','LIST'].includes(t)) {
+    const opts = (field.options || '').split(',').map(s => s.trim()).filter(Boolean)
+    return (
+      <select value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={inputStyle}>
+        <option value="">-- Select --</option>
+        {opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    )
+  }
+
+  if (t === 'DATE FIELD') {
+    return <input type="date" value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={inputStyle} />
+  }
+
+  if (t === 'DATETIME FIELD') {
+    return <input type="datetime-local" value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={inputStyle} />
+  }
+
+  if (t === 'RADIO BUTTON' || t === 'CHECKBOX') {
+    const opts = (field.options || '').split(',').map(s => s.trim()).filter(Boolean)
+    const type = t === 'RADIO BUTTON' ? 'radio' : 'checkbox'
+    return (
+      <div style={{ display:'flex', gap:16, padding:'6px 0', flexWrap:'wrap' }}>
+        {(opts.length ? opts : ['Option 1','Option 2']).map((o,i) => (
+          <label key={i} style={{ display:'flex', gap:6, alignItems:'center', fontSize:'0.85rem', color: theme.fieldText }}>
+            <input type={type} name={field.id} /> {o}
+          </label>
+        ))}
+      </div>
+    )
+  }
+
+  if (t === 'SUBMIT BUTTON' || t === 'DIAL BUTTON') {
+    return (
+      <button type="button" style={{
+        width:'100%', padding:'10px', border:'none',
+        borderRadius: `${theme.fieldRadius}px`, color:'white',
+        background: theme.crmAccent || '#e67e22',
+        cursor:'pointer', fontWeight:600,
+      }}>
+        {field.label || t}
+      </button>
+    )
+  }
+
+  const colType = (field._targetType || '').toLowerCase()
+  let inputType = 'text'
+  if (['int','integer','bigint','numeric','float','double'].includes(colType)) inputType = 'number'
+  else if (colType === 'date') inputType = 'date'
+  else if (colType === 'timestamp' || colType === 'datetime') inputType = 'datetime-local'
+
+  return <input type={inputType} placeholder={field.placeholder || 'Enter value...'} value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={inputStyle} />
+}
+
+export default function CrmDesigner({ showToast }) {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const [loading, setLoading] = useState(true)
+  const [crmName, setCrmName] = useState('Untitled CRM')
+  const [fields, setFields] = useState([])
+  const [theme, setTheme] = useState({ ...DEFAULT_CRM_THEME })
+  const [selectedId, setSelectedId] = useState(null)
+  const [preview, setPreview] = useState(false)
+  const [themePanelOpen, setThemePanelOpen] = useState(false)
+  const [crmTables, setCrmTables] = useState([])
+
+  const workspaceRef = useRef(null)
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [crmRes, tablesRes] = await Promise.all([
+          api.get(`/crm/${id}`),
+          api.get('/crm-tables'),
+        ])
+        setCrmName(crmRes.data.name)
+        setFields((crmRes.data.fields || []).map(f => ({ ...defaultField(f.type), ...f })))
+        setTheme({ ...DEFAULT_CRM_THEME, ...(crmRes.data.theme || {}) })
+        setCrmTables(tablesRes.data || [])
+      } catch {
+        showToast && showToast('CRM not found')
+        navigate('/crm')
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [id])
+
+  const selected = useMemo(() => fields.find(f => f.id === selectedId), [fields, selectedId])
+
+  const updateField = (fid, patch) =>
+    setFields(prev => prev.map(f => f.id === fid ? { ...f, ...patch } : f))
+
+  const addField = (type) => {
+    const nf = defaultField(type)
+    setFields(prev => [...prev, nf])
+    setSelectedId(nf.id)
+    showToast && showToast(`${type} added`)
+  }
+
+  const removeField = (fid) => {
+    setFields(prev => prev.filter(f => f.id !== fid))
+    if (selectedId === fid) setSelectedId(null)
+  }
+
+  // Auto-layout — arrange in 3-column grid
+  const autoLayoutFields = (list) => {
+    const GAP_X = 20
+    const GAP_Y = 16
+    const FIELD_W = 260
+    const FIELD_H = 90
+    const PAD = 20
+    const COLS = 3
+
+    return list.map((f, i) => {
+      const col = i % COLS
+      const row = Math.floor(i / COLS)
+      return {
+        ...f,
+        floating: true,
+        x: PAD + col * (FIELD_W + GAP_X),
+        y: PAD + row * (FIELD_H + GAP_Y),
+        w: FIELD_W,
+        h: FIELD_H,
+      }
+    })
+  }
+
+  const applyAutoLayout = () => {
+    if (fields.length === 0) return
+    setFields(autoLayoutFields(fields))
+    showToast && showToast('Layout applied')
+  }
+
+  const autoMapAllColumns = (tableName) => {
+    const tbl = crmTables.find(t => t.name === tableName)
+    if (!tbl) return showToast && showToast('Table not found')
+    if (!tbl.columns?.length) return showToast && showToast('Table has no columns')
+
+    const existingMaps = new Set(
+      fields.filter(f => f.targetTable === tableName && f.targetColumn).map(f => f.targetColumn)
+    )
+
+    const newFields = tbl.columns
+      .filter(col => !existingMaps.has(col.name))
+      .map(col => {
+        const f = defaultField('INPUT FIELD')
+        f.label = col.name
+        f.targetTable = tableName
+        f.targetColumn = col.name
+        return f
+      })
+
+    if (newFields.length === 0) {
+      return showToast && showToast('All columns are already mapped')
+    }
+
+    const allFields = [...fields, ...newFields]
+    setFields(autoLayoutFields(allFields))
+    showToast && showToast(`${newFields.length} field${newFields.length !== 1 ? 's' : ''} added`)
+  }
+
+  const onToolDragStart = (e, type) => {
+    e.dataTransfer.effectAllowed = 'copy'
+    e.dataTransfer.setData('text/plain', type)
+  }
+
+  const onCanvasDrop = (e) => {
+    e.preventDefault()
+    const type = e.dataTransfer.getData('text/plain')
+    if (type) addField(type)
+  }
+
+  const onFieldMouseDown = (e, field) => {
+    if (preview) return
+    if (e.button !== 0) return
+    if (e.target.closest('input, select, textarea, button, .field-actions, .field-resize-handle')) return
+    if (e.target.closest('.field-actions')) return
+
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedId(field.id)
+
+    const startX = e.clientX, startY = e.clientY
+    const origX = field.x || 0, origY = field.y || 0
+
+    const onMove = (ev) => {
+      let nx = origX + (ev.clientX - startX)
+      let ny = origY + (ev.clientY - startY)
+      const ws = workspaceRef.current
+      if (ws) {
+        nx = Math.max(0, Math.min(ws.offsetWidth - (field.w || 300) - 10, nx))
+        ny = Math.max(0, Math.min(ws.offsetHeight - 80, ny))
+      }
+      updateField(field.id, { x: nx, y: ny, floating: true })
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const onResizeMouseDown = (e, field) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedId(field.id)
+
+    const startX = e.clientX, startY = e.clientY
+    const origW = field.w || 300, origH = field.h || 80
+
+    const onMove = (ev) => {
+      const nw = Math.max(140, origW + (ev.clientX - startX))
+      const nh = Math.max(50, origH + (ev.clientY - startY))
+      updateField(field.id, { w: nw, h: nh, floating: true })
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const save = async () => {
+    try {
+      await api.put(`/crm/${id}`, { name: crmName, fields, theme })
+      showToast && showToast('CRM saved')
+    } catch {
+      showToast && showToast('Could not save CRM')
+    }
+  }
+
+  if (loading) return <p style={{ padding: 30 }}>Loading...</p>
+
+  const canvasHeight = (() => {
+    if (fields.length === 0) return 260
+    let maxY = 0
+    fields.forEach(f => {
+      const bottom = (f.y || 0) + (f.h || 80)
+      if (bottom > maxY) maxY = bottom
+    })
+    return Math.max(260, maxY + 40)
+  })()
+
+  const selectedTable = crmTables.find(t => t.name === selected?.targetTable)
+  const tableColumnsForSelected = selectedTable?.columns || []
+  const mappedCount = fields.filter(f => f.targetTable && f.targetColumn).length
+
+  return (
+    <>
+      <div className="breadcrumb">
+        <a onClick={() => navigate('/campaign')}>Campaign</a>
+        <span className="sep">›</span>
+        <a onClick={() => navigate('/crm')}>CRM</a>
+        <span className="sep">›</span>
+        <span className="current">{crmName}</span>
+      </div>
+
+      <div style={{ display:'flex', gap:0, height:'calc(100vh - 120px)', overflow:'hidden' }}>
+        {!preview && (
+          <aside style={{
+            width: 240, background:'var(--surface)', borderRight:'1px solid var(--border)',
+            overflowY:'auto', padding:'12px 8px', flexShrink:0,
+          }}>
+            {crmTables.length > 0 && (
+              <div style={{
+                padding: 12, margin: '8px 4px 16px',
+                background: 'var(--primary-light)', borderRadius: 8,
+                border: '1px solid var(--primary)',
+              }}>
+                <div style={{
+                  fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase',
+                  letterSpacing: 0.6, color: 'var(--primary)', marginBottom: 8,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <i className="fas fa-magic"></i> Auto-Map
+                </div>
+                <select
+                  onChange={(e) => { if (e.target.value) { autoMapAllColumns(e.target.value); e.target.value = '' } }}
+                  defaultValue=""
+                  style={{
+                    width: '100%', padding: '8px 10px',
+                    border: '1px solid var(--border)', borderRadius: 6,
+                    fontSize: '0.8rem', background: 'var(--surface)', color: 'var(--text)',
+                    outline: 'none', cursor: 'pointer',
+                  }}
+                >
+                  <option value="">Choose a table...</option>
+                  {crmTables.map(t => (
+                    <option key={t.id} value={t.name}>
+                      {t.displayName || t.name} ({(t.columns || []).length})
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.4 }}>
+                  Creates a form field for every column
+                </div>
+              </div>
+            )}
+
+            <div style={{ fontSize:'0.72rem', fontWeight:700, color:'var(--text-muted)',
+              textTransform:'uppercase', letterSpacing:'0.6px', padding:'8px 12px' }}>
+              Form Elements
+            </div>
+            {TOOLS.map((group) => (
+              <div key={group.cat}>
+                <div style={{ fontSize:'0.65rem', fontWeight:700, textTransform:'uppercase',
+                  letterSpacing:'0.6px', color:'var(--text-muted)', padding:'12px 8px 6px' }}>
+                  {group.cat}
+                </div>
+                {group.items.map((it) => (
+                  <div
+                    key={it.type}
+                    draggable
+                    onDragStart={(e) => onToolDragStart(e, it.type)}
+                    onDoubleClick={() => addField(it.type)}
+                    style={{
+                      display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
+                      background:'#fafcff', border:'1px solid var(--border)', borderRadius:6,
+                      fontSize:'0.8rem', fontWeight:500, cursor:'grab', marginBottom:6,
+                      userSelect:'none',
+                    }}
+                  >
+                    <i className={`fas ${it.icon}`} style={{ color:'var(--primary)', width:18, textAlign:'center' }}></i>
+                    <span>{it.type}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </aside>
+        )}
+
+        <div style={{ flex:1, overflowY:'auto', padding:'20px 24px' }}>
+          {!preview && (
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16, flexWrap:'wrap', gap:12 }}>
+              <div>
+                <input
+                  value={crmName}
+                  onChange={(e) => setCrmName(e.target.value)}
+                  style={{
+                    fontSize:'1.3rem', fontWeight:700, border:'none', background:'transparent',
+                    color:'var(--text)', outline:'none', padding:'4px 0', minWidth:220,
+                  }}
+                />
+                <div style={{ fontSize:'0.8rem', color:'var(--text-muted)', marginTop:4 }}>
+                  {fields.length} field{fields.length !== 1 ? 's' : ''}
+                  {mappedCount > 0 && ` · ${mappedCount} mapped`}
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:8, flexWrap: 'wrap' }}>
+                <button className="btn btn-grey" onClick={() => setThemePanelOpen(true)}
+                  style={{ borderColor: themePanelOpen ? 'var(--primary)' : undefined, color: themePanelOpen ? 'var(--primary)' : undefined }}>
+                  <i className="fas fa-palette"></i> Layout
+                </button>
+                <button className="btn btn-grey" onClick={applyAutoLayout} title="Arrange fields in a grid">
+                  <i className="fas fa-border-all"></i> Auto-Arrange
+                </button>
+                <button className="btn btn-grey" onClick={() => { if (confirm('Clear all fields?')) setFields([]) }}>
+                  <i className="fas fa-undo-alt"></i> Clear
+                </button>
+                <button className="btn btn-outline" onClick={() => setPreview(true)}>
+                  <i className="fas fa-eye"></i> Preview
+                </button>
+                <button className="btn btn-blue" onClick={save}>
+                  <i className="fas fa-save"></i> Save
+                </button>
+              </div>
+            </div>
+          )}
+
+          {preview && (
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:16 }}>
+              <div style={{ fontSize:'1.3rem', fontWeight:700 }}>{crmName} (Preview)</div>
+              <button className="btn btn-blue" onClick={() => setPreview(false)}>
+                <i className="fas fa-times"></i> Exit Preview
+              </button>
+            </div>
+          )}
+
+          <div
+            ref={workspaceRef}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={onCanvasDrop}
+            onClick={(e) => { if (e.target === workspaceRef.current) setSelectedId(null) }}
+            style={{
+              background: theme.crmBg,
+              borderRadius:14, padding: 20,
+              minHeight: canvasHeight,
+              height: canvasHeight,
+              border:'2px dashed var(--border)',
+              position:'relative', overflow:'hidden',
+              transition:'background 0.2s, height 0.2s',
+            }}
+          >
+            {fields.length === 0 && (
+              <div style={{ textAlign:'center', padding:'60px 20px', color:'var(--text-muted)', pointerEvents:'none' }}>
+                <i className="fas fa-arrow-left" style={{ fontSize:'2rem', opacity:0.3, marginBottom:12, display:'block' }}></i>
+                <p>Drag an element from the left panel, or auto-map from a table</p>
+              </div>
+            )}
+
+            {fields.map((f) => {
+              const isSel = f.id === selectedId
+              const isMapped = f.targetTable && f.targetColumn
+              return (
+                <div
+                  key={f.id}
+                  onMouseDown={(e) => onFieldMouseDown(e, f)}
+                  onClick={(e) => {
+                    if (e.target.closest('input, select, textarea, button, .field-actions, .field-resize-handle')) return
+                    setSelectedId(f.id)
+                  }}
+                  style={{
+                    position: 'absolute',
+                    left: f.x, top: f.y,
+                    width: f.w || 260,
+                    minHeight: f.h || 90,
+                    background: theme.fieldBg,
+                    border: isSel
+                      ? `2px solid ${theme.crmAccent}`
+                      : isMapped
+                        ? `1.5px solid var(--primary)`
+                        : `1.5px solid ${adjustColor(theme.crmPrimary, 0.7)}`,
+                    borderRadius: 10,
+                    padding: 14,
+                    cursor: 'move',
+                    zIndex: isSel ? 50 : 10,
+                    boxShadow: isSel ? '0 8px 24px rgba(0,0,0,0.15)' : '0 2px 8px rgba(0,0,0,0.06)',
+                    userSelect: 'none',
+                  }}
+                >
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                    <div style={{ fontSize:'0.78rem', fontWeight:700, color: theme.fieldLabel || 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span>
+                        {f.label || <span style={{ opacity:0.4, fontStyle:'italic' }}>{f.type}</span>}
+                        {f.required && <span style={{ color:'#e74c3c', marginLeft:3 }}>*</span>}
+                      </span>
+                      {isMapped && (
+                        <span style={{
+                          fontSize: '0.62rem', fontWeight: 700,
+                          color: 'var(--primary)',
+                          background: 'var(--primary-light)', padding: '1px 8px', borderRadius: 8,
+                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                        }} title={`Linked to column: ${f.targetColumn}`}>
+                          <i className="fas fa-link" style={{ fontSize: '0.55rem' }}></i>
+                          {f.targetColumn}
+                        </span>
+                      )}
+                    </div>
+                    <div className="field-actions" style={{ display:'flex', gap:4 }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeField(f.id) }}
+                        title="Delete"
+                        style={{ width:22, height:22, border:'none', background:'transparent', color:'var(--text-muted)', borderRadius:4, cursor:'pointer', fontSize:'0.7rem' }}>
+                        <i className="fas fa-trash"></i>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div onMouseDown={(e) => e.stopPropagation()} style={{ cursor:'auto' }}>
+                    <FieldControl
+                      field={{
+                        ...f,
+                        _targetType: (() => {
+                          if (!f.targetTable || !f.targetColumn) return ''
+                          const t = crmTables.find(x => x.name === f.targetTable)
+                          const c = (t?.columns || []).find(x => x.name === f.targetColumn)
+                          return c?.type || ''
+                        })(),
+                      }}
+                      onChange={(patch) => updateField(f.id, patch)}
+                      theme={theme}
+                    />
+                  </div>
+
+                  {isSel && (
+                    <div
+                      className="field-resize-handle"
+                      onMouseDown={(e) => onResizeMouseDown(e, f)}
+                      style={{
+                        position: 'absolute', right: -6, bottom: -6,
+                        width: 14, height: 14,
+                        background: theme.crmAccent,
+                        border: '2px solid white',
+                        borderRadius: '50%',
+                        cursor: 'nwse-resize',
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                        zIndex: 60,
+                      }}
+                      title="Drag to resize"
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {!preview && selected && (
+          <aside style={{
+            width: 340, background:'var(--surface)',
+            borderLeft:'1px solid var(--border)',
+            overflowY:'auto', flexShrink:0,
+            display:'flex', flexDirection:'column',
+          }}>
+            <div style={{
+              padding:'16px 20px',
+              background:'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+              color:'white', display:'flex', justifyContent:'space-between', alignItems:'center'
+            }}>
+              <h3 style={{ fontSize:'0.9rem', fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
+                <i className="fas fa-sliders-h"></i> Field Properties
+              </h3>
+              <button onClick={() => setSelectedId(null)}
+                style={{ width:26, height:26, border:'none', background:'rgba(255,255,255,0.15)', color:'white', borderRadius:6, cursor:'pointer', fontSize:'0.7rem' }}>
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+
+            <div style={{ padding:20, display:'flex', flexDirection:'column', gap:16, overflowY:'auto', flex:1 }}>
+              <div style={{ fontSize:'0.72rem', color:'var(--text-muted)' }}>
+                Field type: <strong style={{ color: 'var(--text)' }}>{selected.type}</strong>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Label</label>
+                <input
+                  value={selected.label}
+                  onChange={(e) => updateField(selected.id, { label: e.target.value })}
+                  placeholder="Enter label"
+                  style={inputStyle}
+                />
+              </div>
+
+              {!['SUBMIT BUTTON','DIAL BUTTON','HEADING'].includes(selected.type) && (
+                <div style={{
+                  padding: 14,
+                  background: 'var(--primary-light)',
+                  borderRadius: 10,
+                  border: '1px solid var(--primary)',
+                }}>
+                  <div style={{
+                    fontSize: '0.72rem', fontWeight: 800, textTransform: 'uppercase',
+                    letterSpacing: 0.5, color: 'var(--primary)', marginBottom: 12,
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <i className="fas fa-link"></i> Link to Data Column
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <label style={{ ...labelStyle, fontSize: '0.7rem', color: 'var(--primary)' }}>Data Table</label>
+                    <select
+                      value={selected.targetTable || ''}
+                      onChange={(e) => updateField(selected.id, { targetTable: e.target.value, targetColumn: '' })}
+                      style={inputStyle}
+                    >
+                      <option value="">Not linked</option>
+                      {crmTables.map(t => (
+                        <option key={t.id} value={t.name}>
+                          {t.displayName || t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {selected.targetTable && (
+                    <div>
+                      <label style={{ ...labelStyle, fontSize: '0.7rem', color: 'var(--primary)' }}>Data Column</label>
+                      <select
+                        value={selected.targetColumn || ''}
+                        onChange={(e) => updateField(selected.id, { targetColumn: e.target.value })}
+                        style={inputStyle}
+                      >
+                        <option value="">Choose column...</option>
+                        {tableColumnsForSelected.map(c => (
+                          <option key={c.name} value={c.name}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {selected.targetTable && selected.targetColumn && (
+                    <div style={{
+                      marginTop: 10, fontSize: '0.72rem',
+                      color: 'var(--primary)',
+                      background: 'var(--surface)', padding: '8px 12px',
+                      borderRadius: 6, textAlign: 'center', fontWeight: 600,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    }}>
+                      <i className="fas fa-check-circle"></i>
+                      Linked to "{selected.targetColumn}"
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {['INPUT FIELD','TEXT AREA','COMMENTS','SELECT PHONE'].includes(selected.type) && (
+                <div>
+                  <label style={labelStyle}>Placeholder</label>
+                  <input
+                    value={selected.placeholder}
+                    onChange={(e) => updateField(selected.id, { placeholder: e.target.value })}
+                    placeholder="Enter placeholder"
+                    style={inputStyle}
+                  />
+                </div>
+              )}
+
+              {['SELECT BOX','RADIO BUTTON','CHECKBOX','LIST'].includes(selected.type) && (
+                <div>
+                  <label style={labelStyle}>Options</label>
+                  <textarea
+                    value={selected.options}
+                    onChange={(e) => updateField(selected.id, { options: e.target.value })}
+                    placeholder="Option 1, Option 2, Option 3"
+                    rows={2}
+                    style={{ ...inputStyle, resize: 'vertical' }}
+                  />
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                    Separate with commas
+                  </div>
+                </div>
+              )}
+
+              <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:'0.85rem', cursor:'pointer' }}>
+                <input type="checkbox" checked={selected.required}
+                  onChange={(e) => updateField(selected.id, { required: e.target.checked })} />
+                Required field
+              </label>
+
+              <div>
+                <label style={labelStyle}>Size (width × height)</label>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input type="number" value={Math.round(selected.w || 260)}
+                    onChange={(e) => updateField(selected.id, { w: parseInt(e.target.value) || 260 })}
+                    style={inputStyle}
+                  />
+                  <input type="number" value={Math.round(selected.h || 90)}
+                    onChange={(e) => updateField(selected.id, { h: parseInt(e.target.value) || 90 })}
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <button className="btn btn-grey"
+                onClick={() => removeField(selected.id)}
+                style={{ marginTop:8, width:'100%', justifyContent:'center', color:'var(--danger)', borderColor:'var(--danger)' }}>
+                <i className="fas fa-trash"></i> Delete Field
+              </button>
+            </div>
+          </aside>
+        )}
+      </div>
+
+      {themePanelOpen && !preview && (
+        <CrmThemePanel
+          theme={theme}
+          onChange={setTheme}
+          onClose={() => setThemePanelOpen(false)}
+        />
+      )}
+    </>
+  )
+}
+
+const labelStyle = {
+  fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase',
+  letterSpacing:0.4, display:'block', marginBottom:6, color: 'var(--text)',
+}
+
+const inputStyle = {
+  width:'100%', padding:'9px 12px',
+  border:'1px solid var(--border)', borderRadius:6,
+  fontSize:'0.85rem', outline:'none',
+  background: 'var(--surface)', color: 'var(--text)',
+}

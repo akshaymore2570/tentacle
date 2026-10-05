@@ -4,7 +4,7 @@ import { useAuth } from '../store/authStore'
 
 export default function Login() {
   const navigate = useNavigate()
-  const { login, token, loading } = useAuth()
+  const { login, token, loading, user } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPwd, setShowPwd] = useState(false)
@@ -12,20 +12,25 @@ export default function Login() {
   const [success, setSuccess] = useState(false)
 
   useEffect(() => {
-    if (token) navigate('/campaign', { replace: true })
-  }, [token, navigate])
+    if (token && user) {
+      if (user.isSuperAdmin) navigate('/license', { replace: true })
+      else navigate('/campaign', { replace: true })
+    }
+  }, [token, user, navigate])
 
-  const redirectAfterLogin = async () => {
+  const redirectAfterLogin = async (loggedUser) => {
+    if (loggedUser?.isSuperAdmin) {
+      setTimeout(() => navigate('/license', { replace: true }), 400)
+      return
+    }
     try {
       const res = await fetch('/api/license/status')
       const lic = await res.json()
       setTimeout(() => {
-        navigate(lic.valid ? '/campaign' : '/license', { replace: true })
+        navigate(lic.valid ? '/campaign' : '/login', { replace: true })
       }, 600)
     } catch {
-      setTimeout(() => {
-        navigate('/campaign', { replace: true })
-      }, 600)
+      setTimeout(() => navigate('/campaign', { replace: true }), 600)
     }
   }
 
@@ -39,7 +44,7 @@ export default function Login() {
     const res = await login(username.trim(), password)
     if (res.ok) {
       setSuccess(true)
-      redirectAfterLogin()
+      redirectAfterLogin(res.user)
     } else {
       setError(res.error || 'Invalid username or password')
       setPassword('')
@@ -132,13 +137,6 @@ export default function Login() {
 
         <div className="login-footer">
           &copy; 2025 <strong style={{ color: '#6b7d91' }}>Tentacle Technologies</strong> · All rights reserved
-        </div>
-
-        <div style={{
-          textAlign: 'center', marginTop: 14, fontSize: '0.72rem',
-          color: '#94a3b8', lineHeight: 1.6
-        }}>
-          Demo: <strong>admin / admin123</strong> · <strong>priya / priya@123</strong>
         </div>
 
         <style>{`

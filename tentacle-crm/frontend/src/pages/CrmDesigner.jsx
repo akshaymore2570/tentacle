@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import api from '../api'
+import CrmThemePanel, { DEFAULT_CRM_THEME, adjustColor } from '../components/CrmThemePanel'
 
 const TOOLS = [
   { cat: 'Basic', items: [
@@ -10,11 +11,10 @@ const TOOLS = [
   ]},
   { cat: 'Selection', items: [
     { type: 'SELECT BOX', icon: 'fa-caret-square-down' },
-    { type: 'SELECT CHILD BOX', icon: 'fa-code-branch' },
     { type: 'RADIO BUTTON', icon: 'fa-dot-circle' },
     { type: 'CHECKBOX', icon: 'fa-check-square' },
   ]},
-  { cat: 'Date & Time', items: [
+  { cat: 'Date', items: [
     { type: 'DATE FIELD', icon: 'fa-calendar-alt' },
     { type: 'DATETIME FIELD', icon: 'fa-clock' },
   ]},
@@ -22,21 +22,14 @@ const TOOLS = [
     { type: 'SUBMIT BUTTON', icon: 'fa-check-square' },
     { type: 'DIAL BUTTON', icon: 'fa-phone-alt' },
   ]},
-  { cat: 'Advanced', items: [
-    { type: 'LIST', icon: 'fa-list' },
-    { type: 'SELECT PHONE', icon: 'fa-phone' },
-    { type: 'DISPOSITION COMBO', icon: 'fa-clipboard-list' },
-    { type: 'COMMENTS', icon: 'fa-comment' },
-  ]},
 ]
-
-const DEFAULT_THEME = {
-  columns: '2',
-  gap: '20',
-}
 
 let uid = 1
 const nextId = () => `f${uid++}_${Date.now()}`
+const GRID = 10
+
+// Fields that should NOT be mappable (no data storage)
+const NON_MAPPABLE = ['SUBMIT BUTTON', 'DIAL BUTTON', 'HEADING']
 
 function defaultField(type) {
   return {
@@ -47,52 +40,83 @@ function defaultField(type) {
     required: false,
     value: '',
     options: '',
-    height: null,
-    colspan: 1,
-    floating: false,
-    x: 0, y: 0, w: 0, h: 0,
+    x: 20, y: 20, w: 260, h: 90,
+    targetTable: '',
+    targetColumn: '',
   }
 }
 
-function FieldControl({ field, onChange }) {
+// Convert DB column type → HTML input type
+function inputTypeForColumn(colType) {
+  const t = (colType || '').toLowerCase()
+  if (['int','integer','bigint','numeric','float','double'].includes(t)) return 'number'
+  if (t === 'date') return 'date'
+  if (t === 'timestamp' || t === 'datetime') return 'datetime-local'
+  return 'text'
+}
+
+// Render form control for a field
+function FieldControl({ field, onChange, theme, dbColType }) {
   const t = field.type
-  if (t === 'TEXT AREA' || t === 'COMMENTS') {
-    return <textarea placeholder={field.placeholder || `Enter ${t.toLowerCase()}...`}
-      value={field.value} onChange={(e) => onChange({ value: e.target.value })} />
+  const inputStyle = {
+    width: '100%',
+    padding: theme.fieldSize === 'small' ? '6px 10px' : theme.fieldSize === 'large' ? '13px 16px' : '9px 12px',
+    fontSize: theme.fieldSize === 'small' ? '0.78rem' : theme.fieldSize === 'large' ? '0.95rem' : '0.85rem',
+    border: `1px solid ${theme.fieldBorder}`,
+    borderRadius: `${theme.fieldRadius}px`,
+    background: theme.fieldBg,
+    color: theme.fieldText,
+    fontFamily: 'inherit',
+    outline: 'none',
   }
-  if (['SELECT BOX','SELECT CHILD BOX','SELECT PHONE','DISPOSITION COMBO','LIST'].includes(t)) {
-    const opts = (field.options || '').split(',').map(s => s.trim()).filter(Boolean)
+
+  if (t === 'HEADING') {
+    return <input value={field.value || ''} onChange={(e) => onChange({ value: e.target.value })} placeholder={field.placeholder || 'Heading text'} style={{ ...inputStyle, fontWeight: 700, fontSize: '1.1rem' }} />
+  }
+
+  if (t === 'TEXT AREA') {
+    return <textarea value={field.value} onChange={(e) => onChange({ value: e.target.value })} placeholder={field.placeholder || 'Enter text...'} style={{ ...inputStyle, minHeight: 60, resize: 'vertical' }} />
+  }
+
+  if (t === 'SELECT BOX') {
+    const opts = (field.options || '').split(',').map(x => x.trim()).filter(Boolean)
     return (
-      <select value={field.value} onChange={(e) => onChange({ value: e.target.value })}>
+      <select value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={inputStyle}>
         <option value="">-- Select --</option>
         {opts.map(o => <option key={o} value={o}>{o}</option>)}
       </select>
     )
   }
-  if (t === 'DATE FIELD') return <input type="date" value={field.value} onChange={(e) => onChange({ value: e.target.value })} />
-  if (t === 'DATETIME FIELD') return <input type="datetime-local" value={field.value} onChange={(e) => onChange({ value: e.target.value })} />
+
   if (t === 'RADIO BUTTON' || t === 'CHECKBOX') {
-    const opts = (field.options || '').split(',').map(s => s.trim()).filter(Boolean)
+    const opts = (field.options || '').split(',').map(x => x.trim()).filter(Boolean)
     const type = t === 'RADIO BUTTON' ? 'radio' : 'checkbox'
     return (
-      <div style={{ display:'flex', gap:16, padding:'6px 0', flexWrap:'wrap' }}>
-        {(opts.length ? opts : ['Option 1','Option 2']).map((o,i) => (
-          <label key={i} style={{ display:'flex', gap:6, alignItems:'center', fontSize:'0.85rem' }}>
-            <input type={type} name={field.id} /> {o}
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '4px 0' }}>
+        {(opts.length ? opts : ['Option 1']).map((o, i) => (
+          <label key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: '0.82rem', color: theme.fieldText }}>
+            <input type={type} name={field.id} value={o} onChange={() => onChange({ value: o })} />
+            {o}
           </label>
         ))}
       </div>
     )
   }
+
+  if (t === 'DATE FIELD') return <input type="date" value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={inputStyle} />
+  if (t === 'DATETIME FIELD') return <input type="datetime-local" value={field.value} onChange={(e) => onChange({ value: e.target.value })} style={inputStyle} />
+
   if (t === 'SUBMIT BUTTON' || t === 'DIAL BUTTON') {
-    return <button type="button" className="btn-blue"
-      style={{ width:'100%', padding:'10px', border:'none', borderRadius:6, color:'white',
-        background:'var(--primary)', cursor:'pointer', fontWeight:600 }}>
-      {field.label || t}
-    </button>
+    return (
+      <button type="button" style={{ ...inputStyle, background: theme.crmAccent || '#e67e22', color: 'white', cursor: 'pointer', fontWeight: 600 }}>
+        {field.label || t}
+      </button>
+    )
   }
-  return <input type="text" placeholder={field.placeholder || `Enter ${t.toLowerCase()}...`}
-    value={field.value} onChange={(e) => onChange({ value: e.target.value })} />
+
+  // Default INPUT FIELD — auto type based on mapped column
+  const htmlType = inputTypeForColumn(dbColType)
+  return <input type={htmlType} value={field.value} onChange={(e) => onChange({ value: e.target.value })} placeholder={field.placeholder || 'Enter value...'} style={inputStyle} />
 }
 
 export default function CrmDesigner({ showToast }) {
@@ -101,23 +125,35 @@ export default function CrmDesigner({ showToast }) {
   const [loading, setLoading] = useState(true)
   const [crmName, setCrmName] = useState('Untitled CRM')
   const [fields, setFields] = useState([])
-  const [theme, setTheme] = useState(DEFAULT_THEME)
-  const [selectedId, setSelectedId] = useState(null)
-  const [mode, setMode] = useState('grid')  // grid | free
+  const [theme, setTheme] = useState({ ...DEFAULT_CRM_THEME })
+  const [selectedIds, setSelectedIds] = useState([])
   const [preview, setPreview] = useState(false)
+  const [themePanelOpen, setThemePanelOpen] = useState(false)
+  const [crmTables, setCrmTables] = useState([])
+  const [zoom, setZoom] = useState(1)
+  const [history, setHistory] = useState([])
+  const [future, setFuture] = useState([])
+  const [guides, setGuides] = useState({ v: [], h: [] })
+  const [marquee, setMarquee] = useState(null)
+  const [editingLabel, setEditingLabel] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
 
-  const gridRef = useRef(null)
   const workspaceRef = useRef(null)
-  const dragRef = useRef({ active:false, sourceType:null, sourceEl:null, offsetX:0, offsetY:0 })
 
   // ---------- Load ----------
   useEffect(() => {
     (async () => {
       try {
-        const { data } = await api.get(`/crm/${id}`)
-        setCrmName(data.name)
-        setFields((data.fields || []).map(f => ({ ...defaultField(f.type), ...f, id: f.id || nextId() })))
-        setTheme({ ...DEFAULT_THEME, ...(data.theme || {}) })
+        const [crmRes, tablesRes] = await Promise.all([
+          api.get(`/crm/${id}`),
+          api.get('/crm-tables'),
+        ])
+        setCrmName(crmRes.data.name)
+        setFields((crmRes.data.fields || []).map(f => ({ ...defaultField(f.type), ...f })))
+        setTheme({ ...DEFAULT_CRM_THEME, ...(crmRes.data.theme || {}) })
+        setCrmTables(tablesRes.data || [])
+        setDirty(false)
       } catch {
         showToast && showToast('CRM not found')
         navigate('/crm')
@@ -127,93 +163,290 @@ export default function CrmDesigner({ showToast }) {
     })()
   }, [id])
 
-  const selected = useMemo(() => fields.find(f => f.id === selectedId), [fields, selectedId])
+  // Mark dirty on any change
+  useEffect(() => {
+    if (!loading) setDirty(true)
+  }, [fields, crmName, theme])
+
+  // ---------- History ----------
+  const pushHistory = () => {
+    setHistory(h => [...h.slice(-30), JSON.stringify(fields)])
+    setFuture([])
+  }
+  const undo = () => {
+    if (!history.length) return
+    setFuture(f => [JSON.stringify(fields), ...f])
+    setFields(JSON.parse(history[history.length - 1]))
+    setHistory(h => h.slice(0, -1))
+  }
+  const redo = () => {
+    if (!future.length) return
+    setHistory(h => [...h, JSON.stringify(fields)])
+    setFields(JSON.parse(future[0]))
+    setFuture(f => f.slice(1))
+  }
+
+  // ---------- Keyboard ----------
+  useEffect(() => {
+    const onKey = (e) => {
+      if (preview) return
+      const tag = e.target.tagName
+      if (['INPUT','TEXTAREA','SELECT'].includes(tag)) return
+      const ctrl = e.ctrlKey || e.metaKey
+
+      if (ctrl && e.key === 'z') { e.preventDefault(); undo() }
+      if (ctrl && e.key === 'y') { e.preventDefault(); redo() }
+      if (ctrl && e.key === 'd' && selectedIds.length) {
+        e.preventDefault(); pushHistory()
+        const dups = fields.filter(f => selectedIds.includes(f.id)).map(f => ({ ...f, id: nextId(), x: f.x + 20, y: f.y + 20 }))
+        setFields(p => [...p, ...dups])
+        setSelectedIds(dups.map(f => f.id))
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length) {
+        e.preventDefault(); pushHistory()
+        setFields(p => p.filter(f => !selectedIds.includes(f.id)))
+        setSelectedIds([])
+      }
+      if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && selectedIds.length) {
+        e.preventDefault()
+        const step = e.shiftKey ? 10 : 1
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
+        setFields(p => p.map(f => selectedIds.includes(f.id) ? { ...f, x: f.x + dx, y: f.y + dy } : f))
+      }
+      if (e.key === 'Escape') setSelectedIds([])
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fields, selectedIds, history, future, preview])
 
   const updateField = (fid, patch) =>
-    setFields(prev => prev.map(f => f.id === fid ? { ...f, ...patch } : f))
+    setFields(p => p.map(f => f.id === fid ? { ...f, ...patch } : f))
 
-  const addField = (type, dropPoint) => {
+  const addField = (type, dropX, dropY) => {
+    pushHistory()
     const nf = defaultField(type)
-    setFields(prev => [...prev, nf])
-    setSelectedId(nf.id)
-    if (dropPoint) { /* can compute x,y for free mode if needed */ }
-    showToast && showToast(`"${type}" added`)
+    if (dropX != null) nf.x = Math.round((dropX - 130) / GRID) * GRID
+    if (dropY != null) nf.y = Math.round((dropY - 45) / GRID) * GRID
+    setFields(p => [...p, nf])
+    setSelectedIds([nf.id])
+    showToast && showToast(`${type} added`)
   }
 
-  const removeField = (fid) => {
-    setFields(prev => prev.filter(f => f.id !== fid))
-    if (selectedId === fid) setSelectedId(null)
+  const snap = (v) => Math.round(v / GRID) * GRID
+
+  const computeGuides = (movingF) => {
+    const v = [], h = []
+    const ws = workspaceRef.current
+    if (!ws) return { v, h }
+    const cx = movingF.x + movingF.w / 2
+    const cy = movingF.y + movingF.h / 2
+    fields.forEach(f => {
+      if (f.id === movingF.id) return
+      if (Math.abs(f.x - movingF.x) < 5) v.push(f.x)
+      if (Math.abs((f.x + f.w/2) - cx) < 5) v.push(f.x + f.w/2)
+      if (Math.abs((f.x + f.w) - (movingF.x + movingF.w)) < 5) v.push(f.x + f.w)
+      if (Math.abs(f.y - movingF.y) < 5) h.push(f.y)
+      if (Math.abs((f.y + f.h/2) - cy) < 5) h.push(f.y + f.h/2)
+      if (Math.abs((f.y + f.h) - (movingF.y + movingF.h)) < 5) h.push(f.y + f.h)
+    })
+    if (Math.abs(ws.offsetWidth/2 - cx) < 5) v.push(ws.offsetWidth/2)
+    if (Math.abs(ws.offsetHeight/2 - cy) < 5) h.push(ws.offsetHeight/2)
+    return { v: [...new Set(v)], h: [...new Set(h)] }
   }
 
-  // ---------- Drag from tool palette ----------
-  const onToolDragStart = (e, type) => {
-    dragRef.current = { active:true, sourceType:'tool', toolType:type }
-    e.dataTransfer.effectAllowed = 'copy'
-    e.dataTransfer.setData('text/plain', type)
-  }
+  const onFieldMouseDown = (e, field) => {
+    if (preview) return
+    if (e.button !== 0) return
+    if (e.target.closest('input, select, textarea, button, .field-actions, .field-resize-handle')) return
 
-  const onCanvasDrop = (e) => {
-    e.preventDefault()
-    const type = e.dataTransfer.getData('text/plain') || dragRef.current.toolType
-    if (!type) return
-    addField(type)
-    dragRef.current.active = false
-  }
-
-  // ---------- Move existing field (free mode) ----------
-  const startFieldDrag = (e, field) => {
-    if (mode !== 'free' || !field.floating) return
-    if (e.target.closest('.field-actions') || e.target.closest('.resize-handle')) return
-    if (['INPUT','SELECT','TEXTAREA','BUTTON'].includes(e.target.tagName)) return
-    e.preventDefault()
-    const startX = e.clientX, startY = e.clientY
-    const startLeft = field.x, startTop = field.y
-    dragRef.current = { active:true, sourceType:'field', fid: field.id, startX, startY, startLeft, startTop }
-
-    const move = (ev) => {
-      const dx = ev.clientX - startX
-      const dy = ev.clientY - startY
-      updateField(field.id, { x: startLeft + dx, y: startTop + dy })
-    }
-    const up = () => {
-      document.removeEventListener('mousemove', move)
-      document.removeEventListener('mouseup', up)
-      dragRef.current.active = false
-    }
-    document.addEventListener('mousemove', move)
-    document.addEventListener('mouseup', up)
-  }
-
-  const toggleFloat = (fid) => {
-    const f = fields.find(x => x.id === fid)
-    if (!f) return
-    if (f.floating) {
-      updateField(fid, { floating:false, x:0, y:0, w:0, h:0 })
+    e.preventDefault(); e.stopPropagation()
+    let newSel
+    if (e.shiftKey) {
+      newSel = selectedIds.includes(field.id) ? selectedIds.filter(x => x !== field.id) : [...selectedIds, field.id]
+    } else if (selectedIds.includes(field.id)) {
+      newSel = selectedIds
     } else {
-      const el = document.querySelector(`[data-fid="${fid}"]`)
-      const rect = el?.getBoundingClientRect()
-      const ws = workspaceRef.current?.getBoundingClientRect()
-      updateField(fid, {
-        floating:true,
-        x: rect && ws ? rect.left - ws.left : 20,
-        y: rect && ws ? rect.top - ws.top : 20,
-        w: rect ? rect.width : 220,
-        h: rect ? rect.height : 80,
+      newSel = [field.id]
+    }
+    setSelectedIds(newSel)
+    pushHistory()
+
+    const startX = e.clientX, startY = e.clientY
+    const initial = fields.map(f => ({ id: f.id, x: f.x, y: f.y, sel: newSel.includes(f.id) }))
+
+    const onMove = (ev) => {
+      const dx = (ev.clientX - startX) / zoom
+      const dy = (ev.clientY - startY) / zoom
+      setFields(p => p.map(f => {
+        const init = initial.find(i => i.id === f.id)
+        if (!init || !init.sel) return f
+        let nx = init.x + dx, ny = init.y + dy
+        if (newSel.length === 1) { nx = snap(nx); ny = snap(ny) }
+        const ws = workspaceRef.current
+        if (ws) { nx = Math.max(0, Math.min(ws.offsetWidth - f.w, nx)); ny = Math.max(0, Math.min(ws.offsetHeight - f.h, ny)) }
+        return { ...f, x: nx, y: ny }
+      }))
+      if (newSel.length === 1) {
+        const init = initial.find(i => i.id === field.id)
+        setGuides(computeGuides({ ...field, x: init.x + dx, y: init.y + dy }))
+      }
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      setGuides({ v: [], h: [] })
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const onResizeMouseDown = (e, field, dir) => {
+    e.preventDefault(); e.stopPropagation()
+    pushHistory()
+    const startX = e.clientX, startY = e.clientY
+    const init = { x: field.x, y: field.y, w: field.w, h: field.h }
+    const onMove = (ev) => {
+      const dx = (ev.clientX - startX) / zoom
+      const dy = (ev.clientY - startY) / zoom
+      let { x, y, w, h } = init
+      if (dir.includes('e')) w = Math.max(120, init.w + dx)
+      if (dir.includes('s')) h = Math.max(50, init.h + dy)
+      if (dir.includes('w')) { const nw = Math.max(120, init.w - dx); x = init.x + (init.w - nw); w = nw }
+      if (dir.includes('n')) { const nh = Math.max(50, init.h - dy); y = init.y + (init.h - nh); h = nh }
+      updateField(field.id, { x: snap(x), y: snap(y), w: snap(w), h: snap(h) })
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const onWorkspaceMouseDown = (e) => {
+    if (preview) return
+    if (e.target !== workspaceRef.current) return
+    setSelectedIds([])
+    const ws = workspaceRef.current
+    const rect = ws.getBoundingClientRect()
+    const startX = e.clientX - rect.left
+    const startY = e.clientY - rect.top
+    setMarquee({ x: startX, y: startY, w: 0, h: 0 })
+    const onMove = (ev) => {
+      const cx = ev.clientX - rect.left
+      const cy = ev.clientY - rect.top
+      setMarquee({
+        x: Math.min(startX, cx), y: Math.min(startY, cy),
+        w: Math.abs(cx - startX), h: Math.abs(cy - startY),
       })
     }
+    const onUp = (ev) => {
+      const cx = ev.clientX - rect.left
+      const cy = ev.clientY - rect.top
+      const nx = Math.min(startX, cx), ny = Math.min(startY, cy)
+      const nw = Math.abs(cx - startX), nh = Math.abs(cy - startY)
+      if (nw > 5 && nh > 5) {
+        const hits = fields.filter(f =>
+          f.x < nx + nw && f.x + f.w > nx && f.y < ny + nh && f.y + f.h > ny
+        ).map(f => f.id)
+        setSelectedIds(hits)
+      }
+      setMarquee(null)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
-  // ---------- Save / Preview ----------
-  const save = async () => {
+  const autoLayout = () => {
+    if (!fields.length) return
+    pushHistory()
+    const GAP_X = 20, GAP_Y = 16, W = 260, H = 90, PAD = 20, COLS = 3
+    setFields(p => p.map((f, i) => ({
+      ...f,
+      x: PAD + (i % COLS) * (W + GAP_X),
+      y: PAD + Math.floor(i / COLS) * (H + GAP_Y),
+      w: W, h: H,
+    })))
+  }
+
+  const autoMap = (tableName) => {
+    const tbl = crmTables.find(t => t.name === tableName)
+    if (!tbl) return
+    pushHistory()
+    const newFields = (tbl.columns || []).map((col, i) => {
+      const f = defaultField('INPUT FIELD')
+      f.label = col.name
+      f.targetTable = tableName
+      f.targetColumn = col.name
+      const idx = fields.length + i
+      f.x = 20 + (idx % 3) * 280
+      f.y = 20 + Math.floor(idx / 3) * 106
+      return f
+    })
+    setFields(p => [...p, ...newFields])
+  }
+
+  const save = async (silent = false) => {
+    setSaving(true)
     try {
-      await api.put(`/crm/${id}`, { name: crmName, fields, theme })
-      showToast && showToast('CRM saved')
-    } catch {
-      showToast && showToast('Save failed')
+      // Log what we're sending (for debugging)
+      console.log('[CRM Save] Sending theme:', theme)
+      const payload = { name: crmName, fields, theme }; console.log("[CRM Save]", payload); await api.put(`/crm/${id}`, payload)
+      setDirty(false)
+      if (!silent) showToast && showToast('Saved successfully')
+      return true
+    } catch (e) {
+      showToast && showToast(e.response?.data?.error || 'Could not save')
+      return false
+    } finally {
+      setSaving(false)
     }
   }
 
+  const apply = async () => {
+    const ok = await save(true)
+    if (!ok) return
+    try {
+      const { data } = await api.get(`/crm/${id}`)
+      setCrmName(data.name)
+      setFields((data.fields || []).map(f => ({ ...defaultField(f.type), ...f })))
+      setTheme({ ...DEFAULT_CRM_THEME, ...(data.theme || {}) })
+      showToast && showToast('Changes applied')
+    } catch {
+      showToast && showToast('Applied')
+    }
+  }
+
+  // Canvas size
+  const canvasHeight = (() => {
+    if (!fields.length) return 400
+    let m = 0
+    fields.forEach(f => { const b = (f.y || 0) + (f.h || 80); if (b > m) m = b })
+    return Math.max(400, m + 60)
+  })()
+
+  const canvasWidth = (() => {
+    if (!fields.length) return '100%'
+    let m = 0
+    fields.forEach(f => { const r = (f.x || 0) + (f.w || 260); if (r > m) m = r })
+    return Math.min(Math.max(600, m + 60), 2000)
+  })()
+
   if (loading) return <p style={{ padding: 30 }}>Loading...</p>
+
+  // Canvas background CSS
+  const canvasBgCSS = theme.crmBgMode === 'gradient'
+    ? `linear-gradient(${theme.crmBgGradDir || '135deg'}, ${theme.crmBgGrad1 || '#ffffff'}, ${theme.crmBgGrad2 || '#e8f0fe'})`
+    : theme.crmBg
+
+  // Get selected field (single)
+  const sel = selectedIds.length === 1 ? fields.find(f => f.id === selectedIds[0]) : null
+  const selTable = sel ? crmTables.find(t => t.name === sel.targetTable) : null
+  const tableCols = selTable?.columns || []
+  const selDbColType = sel?.targetColumn ? (tableCols.find(c => c.name === sel.targetColumn)?.type || '') : ''
 
   return (
     <>
@@ -225,36 +458,30 @@ export default function CrmDesigner({ showToast }) {
         <span className="current">{crmName}</span>
       </div>
 
-      <div style={{ display:'flex', gap: 0, height: 'calc(100vh - 120px)', overflow:'hidden' }}>
-        {/* TOOLS PANEL */}
+      <div style={{ display: 'flex', gap: 0, height: 'calc(100vh - 120px)', overflow: 'hidden' }}>
+
+        {/* TOOLS */}
         {!preview && (
-          <aside style={{
-            width: 220, background:'var(--surface)', borderRight:'1px solid var(--border)',
-            overflowY:'auto', padding: '12px 8px', flexShrink: 0,
-          }}>
-            <div style={{ fontSize:'0.72rem', fontWeight:700, color:'var(--text-muted)',
-              textTransform:'uppercase', letterSpacing:'0.6px', padding:'8px 12px' }}>
-              Form Elements
-            </div>
-            {TOOLS.map((group) => (
-              <div key={group.cat}>
-                <div style={{ fontSize:'0.65rem', fontWeight:700, textTransform:'uppercase',
-                  letterSpacing:'0.6px', color:'var(--text-muted)', padding:'12px 8px 6px' }}>
-                  {group.cat}
+          <aside style={{ width: 220, background: 'var(--surface)', borderRight: '1px solid var(--border)', overflowY: 'auto', padding: '12px 8px', flexShrink: 0 }}>
+            {crmTables.length > 0 && (
+              <div style={{ padding: 12, margin: '8px 4px 16px', background: 'var(--primary-light)', borderRadius: 8, border: '1px solid var(--primary)' }}>
+                <div style={{ fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--primary)', marginBottom: 8 }}>
+                  <i className="fas fa-magic"></i> Auto-Map
                 </div>
-                {group.items.map((it) => (
-                  <div
-                    key={it.type}
-                    draggable
-                    onDragStart={(e) => onToolDragStart(e, it.type)}
-                    style={{
-                      display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
-                      background:'#fafcff', border:'1px solid var(--border)', borderRadius:6,
-                      fontSize:'0.8rem', fontWeight:500, cursor:'grab', marginBottom:6,
-                      userSelect:'none',
-                    }}
-                  >
-                    <i className={`fas ${it.icon}`} style={{ color:'var(--primary)', width:18, textAlign:'center' }}></i>
+                <select onChange={(e) => { if (e.target.value) { autoMap(e.target.value); e.target.value = '' } }} defaultValue="" style={selStyles.select}>
+                  <option value="">Choose table...</option>
+                  {crmTables.map(t => <option key={t.id} value={t.name}>{t.displayName || t.name} ({(t.columns || []).length})</option>)}
+                </select>
+              </div>
+            )}
+            <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', padding: '8px 12px' }}>Form Elements</div>
+            {TOOLS.map(group => (
+              <div key={group.cat}>
+                <div style={{ fontSize: '0.65rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', padding: '12px 8px 6px' }}>{group.cat}</div>
+                {group.items.map(it => (
+                  <div key={it.type} draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', it.type)} onDoubleClick={() => addField(it.type)}
+                    style={selStyles.toolItem}>
+                    <i className={`fas ${it.icon}`} style={{ color: 'var(--primary)', width: 18 }}></i>
                     <span>{it.type}</span>
                   </div>
                 ))}
@@ -263,360 +490,358 @@ export default function CrmDesigner({ showToast }) {
           </aside>
         )}
 
-        {/* CANVAS AREA */}
-        <div style={{ flex:1, overflowY:'auto', padding:'20px 24px' }}>
+        {/* MAIN */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+
           {!preview && (
-            <div style={{
-              display:'flex', justifyContent:'space-between', alignItems:'flex-start',
-              marginBottom: 16, flexWrap:'wrap', gap:12
-            }}>
-              <div>
-                <input
-                  value={crmName}
-                  onChange={(e) => setCrmName(e.target.value)}
-                  style={{
-                    fontSize:'1.3rem', fontWeight:700, border:'none', background:'transparent',
-                    color:'var(--text)', outline:'none', borderBottom:'1px dashed transparent',
-                    padding:'4px 0', minWidth:220,
-                  }}
-                  onFocus={(e) => e.target.style.borderBottomColor = 'var(--border)'}
-                  onBlur={(e) => e.target.style.borderBottomColor = 'transparent'}
-                />
-                <div style={{ fontSize:'0.8rem', color:'var(--text-muted)', marginTop:4 }}>
-                  {fields.length} field{fields.length !== 1 ? 's' : ''} · {theme.columns} columns · {theme.gap}px gap
-                </div>
+            <div style={selStyles.toolbar}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input value={crmName} onChange={(e) => setCrmName(e.target.value)}
+                  style={{ fontSize: '1rem', fontWeight: 700, border: 'none', background: 'transparent', color: 'var(--text)', outline: 'none' }} />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {fields.length} fields · {selectedIds.length} selected
+                </span>
               </div>
-              <div style={{ display:'flex', gap:8 }}>
-                <button className="btn btn-grey" onClick={() => setFields([])}>
-                  <i className="fas fa-undo-alt"></i> Clear
+
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                <button onClick={undo} disabled={!history.length} title="Undo" style={iconBtn(!history.length)}>
+                  <i className="fas fa-undo"></i>
                 </button>
-                <button className="btn btn-outline" onClick={() => setPreview(true)}>
+                <button onClick={redo} disabled={!future.length} title="Redo" style={iconBtn(!future.length)}>
+                  <i className="fas fa-redo"></i>
+                </button>
+                <div style={selStyles.divider} />
+                <button onClick={() => setZoom(Math.max(0.5, zoom - 0.1))} style={iconBtn(false)}>
+                  <i className="fas fa-search-minus"></i>
+                </button>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, minWidth: 40, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
+                <button onClick={() => setZoom(Math.min(2, zoom + 0.1))} style={iconBtn(false)}>
+                  <i className="fas fa-search-plus"></i>
+                </button>
+                <div style={selStyles.divider} />
+                <button onClick={autoLayout} title="Auto arrange" style={iconBtn(false)}>
+                  <i className="fas fa-border-all"></i>
+                </button>
+                <button onClick={() => setThemePanelOpen(true)} title="Theme" style={iconBtn(false)}>
+                  <i className="fas fa-palette"></i>
+                </button>
+                <div style={selStyles.divider} />
+
+                <button className="btn btn-grey" onClick={() => setPreview(true)} style={selStyles.btnGrey}>
                   <i className="fas fa-eye"></i> Preview
                 </button>
-                <button className="btn btn-blue" onClick={save}>
-                  <i className="fas fa-save"></i> Save
+                <button className="btn btn-grey" onClick={() => save(false)} disabled={saving} style={selStyles.btnGrey}>
+                  {saving ? <><i className="fas fa-spinner fa-spin"></i> Saving...</> : <><i className="fas fa-save"></i> Save</>}
+                </button>
+                <button onClick={apply} disabled={saving}
+                  style={{
+                    ...selStyles.btnApply,
+                    background: saving ? '#94a3b8' : dirty ? 'linear-gradient(135deg, #10b981, #059669)' : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                    boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
+                    position: 'relative',
+                  }}>
+                  <i className="fas fa-check"></i> Apply
+                  {dirty && <span style={{ position: 'absolute', top: -3, right: -3, width: 8, height: 8, borderRadius: '50%', background: '#f59e0b', border: '1.5px solid var(--surface)' }} />}
                 </button>
               </div>
             </div>
           )}
 
           {preview && (
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom: 16 }}>
-              <div style={{ fontSize:'1.3rem', fontWeight:700 }}>{crmName} (Preview)</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div style={{ fontSize: '1.3rem', fontWeight: 700 }}>{crmName} (Preview)</div>
               <button className="btn btn-blue" onClick={() => setPreview(false)}>
                 <i className="fas fa-times"></i> Exit Preview
               </button>
             </div>
           )}
 
-          {/* Mode toggles */}
-          {!preview && (
-            <div style={{
-              display:'flex', gap:12, alignItems:'center', marginBottom:16,
-              padding:'8px 12px', background:'var(--surface)', borderRadius:8,
-              border:'1px solid var(--border)', flexWrap:'wrap'
-            }}>
-              <div style={{ display:'flex', gap:2, background:'#f5f8fc', padding:3, borderRadius:8, border:'1px solid var(--border)' }}>
-                <button
-                  onClick={() => setMode('grid')}
-                  style={{
-                    padding:'6px 12px', border:'none',
-                    background: mode==='grid' ? 'var(--primary)' : 'transparent',
-                    color: mode==='grid' ? 'white' : 'var(--text-muted)',
-                    borderRadius:6, fontSize:'0.72rem', fontWeight:700, cursor:'pointer',
-                  }}
-                >
-                  <i className="fas fa-th"></i> Grid
-                </button>
-                <button
-                  onClick={() => setMode('free')}
-                  style={{
-                    padding:'6px 12px', border:'none',
-                    background: mode==='free' ? 'var(--primary)' : 'transparent',
-                    color: mode==='free' ? 'white' : 'var(--text-muted)',
-                    borderRadius:6, fontSize:'0.72rem', fontWeight:700, cursor:'pointer',
-                  }}
-                >
-                  <i className="fas fa-arrows-alt"></i> Free
-                </button>
-              </div>
-
-              <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:'0.78rem' }}>
-                <span style={{ color:'var(--text-muted)' }}>Columns:</span>
-                {['1','2','3','4'].map(c => (
-                  <button key={c} onClick={() => setTheme({ ...theme, columns:c })}
-                    style={{
-                      width:28, height:26, border:'1px solid var(--border)', borderRadius:6,
-                      background: theme.columns===c ? 'var(--primary)' : 'var(--surface)',
-                      color: theme.columns===c ? 'white' : 'var(--text-muted)',
-                      fontWeight:700, fontSize:'0.75rem', cursor:'pointer'
-                    }}>
-                    {c}
-                  </button>
-                ))}
-              </div>
-
-              <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:'0.78rem' }}>
-                <span style={{ color:'var(--text-muted)' }}>Gap:</span>
-                {['12','20','32'].map(g => (
-                  <button key={g} onClick={() => setTheme({ ...theme, gap:g })}
-                    style={{
-                      padding:'4px 10px', border:'1px solid var(--border)', borderRadius:6,
-                      background: theme.gap===g ? 'var(--primary)' : 'var(--surface)',
-                      color: theme.gap===g ? 'white' : 'var(--text-muted)',
-                      fontWeight:700, fontSize:'0.72rem', cursor:'pointer'
-                    }}>
-                    {g}px
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {mode === 'free' && !preview && (
-            <div style={{
-              padding:'10px 16px', background:'linear-gradient(135deg,#fff4e6,#ffe8cc)',
-              border:'1.5px solid #ffc078', borderRadius:6, marginBottom:16,
-              fontSize:'0.8rem', fontWeight:600, color:'#8a4a00', display:'flex',
-              alignItems:'center', gap:10
-            }}>
-              <i className="fas fa-arrows-alt"></i>
-              <span><strong>Free Position Mode</strong> — Field ko pakad ke kahin bhi drag karo.</span>
-            </div>
-          )}
-
-          {/* WORKSPACE */}
-          <div
-            ref={workspaceRef}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onCanvasDrop}
-            style={{
-              background:'var(--surface)', borderRadius:14, padding:'28px 32px',
-              minHeight: 500, border:'2px dashed var(--border)',
-              position:'relative', transition:'border-color 0.2s',
-            }}
-          >
-            {fields.length === 0 && (
-              <div style={{
-                textAlign:'center', padding:'60px 20px', color:'var(--text-muted)'
-              }}>
-                <i className="fas fa-arrow-left" style={{ fontSize:'2rem', opacity:0.3, marginBottom:12, display:'block' }}></i>
-                <p>Drag form elements from the left panel to start</p>
-              </div>
-            )}
-
+          {/* CANVAS */}
+          <div style={{ overflow: 'auto', background: '#eef2f7', borderRadius: 12, padding: 20 }}>
             <div
-              ref={gridRef}
-              style={{
-                display: mode === 'grid' ? 'grid' : 'block',
-                gridTemplateColumns: mode === 'grid' ? `repeat(${theme.columns}, 1fr)` : 'none',
-                gap: `${theme.gap}px`,
-                position: 'relative',
-                minHeight: 200,
+              ref={workspaceRef}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault()
+                const type = e.dataTransfer.getData('text/plain')
+                if (!type) return
+                const rect = workspaceRef.current.getBoundingClientRect()
+                addField(type, e.clientX - rect.left, e.clientY - rect.top)
               }}
-            >
+              onMouseDown={onWorkspaceMouseDown}
+              style={{
+                background: canvasBgCSS,
+                borderRadius: 12,
+                width: canvasWidth, minWidth: canvasWidth,
+                height: canvasHeight,
+                border: '1px solid var(--border)',
+                position: 'relative',
+                transform: `scale(${zoom})`,
+                transformOrigin: 'top left',
+                margin: '0 auto',
+              }}>
+
+              {/* Grid dots overlay — separate layer so it doesn't override background */}
+              {!preview && (
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  pointerEvents: 'none',
+                  backgroundImage: `linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px)`,
+                  backgroundSize: `${GRID * 2}px ${GRID * 2}px`,
+                  opacity: 0.35,
+                  zIndex: 1,
+                  borderRadius: 12,
+                }} />
+              )}
+
+              {fields.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '140px 20px', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+                  <i className="fas fa-plus-circle" style={{ fontSize: '2.4rem', opacity: 0.25, marginBottom: 14, display: 'block' }}></i>
+                  <p>Drag a form element from the left, or double-click</p>
+                </div>
+              )}
+
+              {guides.v.map((x, i) => <div key={'v' + i} style={{ position: 'absolute', left: x, top: 0, bottom: 0, width: 1, background: '#ff3b30', pointerEvents: 'none', zIndex: 100 }} />)}
+              {guides.h.map((y, i) => <div key={'h' + i} style={{ position: 'absolute', top: y, left: 0, right: 0, height: 1, background: '#ff3b30', pointerEvents: 'none', zIndex: 100 }} />)}
+
+              {marquee && (
+                <div style={{ position: 'absolute', left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h, background: 'rgba(44,95,158,0.1)', border: '1px solid #2c5f9e', pointerEvents: 'none', zIndex: 90 }} />
+              )}
+
               {fields.map((f) => {
-                const isSel = f.id === selectedId
-                if (f.floating && mode === 'free') {
-                  return (
-                    <div
-                      key={f.id}
-                      data-fid={f.id}
-                      onMouseDown={(e) => startFieldDrag(e, f)}
-                      onClick={(e) => { if (!e.target.closest('.field-actions')) setSelectedId(f.id) }}
-                      style={{
-                        position:'absolute', left: f.x, top: f.y,
-                        width: f.w || 220, minHeight: f.h || undefined,
-                        background:'var(--surface)', border: isSel ? '2px solid var(--accent)' : '1.5px solid var(--primary-light)',
-                        borderRadius:8, padding:10, cursor:'move', zIndex: isSel ? 50 : 10,
-                        boxShadow:'0 4px 16px rgba(44,95,158,0.15)',
-                      }}
-                    >
-                      <FieldBlock
-                        field={f}
-                        selected={isSel}
-                        onSelect={() => setSelectedId(f.id)}
-                        onUpdate={(patch) => updateField(f.id, patch)}
-                        onDelete={() => removeField(f.id)}
-                        onToggleFloat={() => toggleFloat(f.id)}
-                        isFloating
-                      />
-                    </div>
-                  )
-                }
+                const isSel = selectedIds.includes(f.id)
+                const isMapped = f.targetTable && f.targetColumn
+                const linkedTable = crmTables.find(t => t.name === f.targetTable)
+                const linkedCol = (linkedTable?.columns || []).find(c => c.name === f.targetColumn)
                 return (
-                  <div
-                    key={f.id}
-                    data-fid={f.id}
-                    onClick={(e) => { if (!e.target.closest('.field-actions')) setSelectedId(f.id) }}
-                    style={{
-                      border: isSel ? '2px solid var(--primary)' : '1px solid transparent',
-                      background: isSel ? 'var(--primary-light)' : 'transparent',
-                      borderRadius:6, padding:8, cursor:'pointer',
-                      gridColumn: `span ${f.colspan || 1}`,
-                      transition:'all 0.15s',
+                  <div key={f.id}
+                    onMouseDown={(e) => onFieldMouseDown(e, f)}
+                    onClick={(e) => {
+                      if (e.target.closest('input, select, textarea, button, .field-actions, .field-resize-handle')) return
+                      if (!e.shiftKey) setSelectedIds([f.id])
                     }}
-                  >
-                    <FieldBlock
-                      field={f}
-                      selected={isSel}
-                      onSelect={() => setSelectedId(f.id)}
-                      onUpdate={(patch) => updateField(f.id, patch)}
-                      onDelete={() => removeField(f.id)}
-                      onToggleFloat={() => toggleFloat(f.id)}
-                    />
+                    style={{
+                      position: 'absolute', left: f.x, top: f.y, width: f.w, height: f.h,
+                      background: theme.fieldBg,
+                      border: preview
+                        ? `1px solid ${theme.fieldBorder}`
+                        : isSel ? `2px solid ${theme.crmAccent}` : isMapped ? `1.5px solid var(--primary)` : `1px solid ${adjustColor(theme.crmPrimary, 0.7)}`,
+                      borderRadius: 8, padding: 12, cursor: preview ? 'default' : 'move',
+                      zIndex: isSel ? 50 : 10,
+                      boxShadow: preview ? '0 1px 3px rgba(0,0,0,0.06)' : isSel ? '0 0 0 3px rgba(230,126,34,0.2), 0 8px 20px rgba(0,0,0,0.12)' : '0 1px 3px rgba(0,0,0,0.05)',
+                      userSelect: 'none', overflow: 'hidden',
+                    }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      {editingLabel === f.id ? (
+                        <input autoFocus value={f.label} onChange={(e) => updateField(f.id, { label: e.target.value })}
+                          onBlur={() => setEditingLabel(null)}
+                          onKeyDown={(e) => e.key === 'Enter' && setEditingLabel(null)}
+                          style={{ fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--primary)', borderRadius: 4, padding: '2px 6px', outline: 'none', width: '100%' }} />
+                      ) : (
+                        <div onDoubleClick={(e) => { e.stopPropagation(); setEditingLabel(f.id) }}
+                          style={{ fontSize: '0.78rem', fontWeight: 700, color: theme.fieldLabel || 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', cursor: 'text' }}
+                          title="Double-click to edit">
+                          <span>
+                            {f.label || <span style={{ opacity: 0.4, fontStyle: 'italic' }}>{f.type}</span>}
+                            {f.required && <span style={{ color: '#e74c3c', marginLeft: 3 }}>*</span>}
+                          </span>
+                          {isMapped && (
+                            <span style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--primary)', background: 'var(--primary-light)', padding: '1px 6px', borderRadius: 6 }}>
+                              <i className="fas fa-link" style={{ fontSize: '0.55rem' }}></i> {f.targetColumn}
+                              {linkedCol?.type && <span style={{ opacity: 0.7, marginLeft: 4 }}>({linkedCol.type})</span>}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div onMouseDown={(e) => e.stopPropagation()} style={{ cursor: 'auto' }}>
+                      <FieldControl field={f} onChange={(patch) => updateField(f.id, patch)} theme={theme} dbColType={linkedCol?.type} />
+                    </div>
+
+                    {isSel && ['nw','ne','sw','se'].map(dir => (
+                      <div key={dir} onMouseDown={(e) => onResizeMouseDown(e, f, dir)}
+                        style={{
+                          position: 'absolute',
+                          [dir.includes('n') ? 'top' : 'bottom']: -5,
+                          [dir.includes('w') ? 'left' : 'right']: -5,
+                          width: 10, height: 10,
+                          background: theme.crmAccent, border: '2px solid white', borderRadius: '50%',
+                          cursor: `${dir}-resize`,
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                          zIndex: 60,
+                        }} />
+                    ))}
                   </div>
                 )
               })}
             </div>
           </div>
+
+          {!preview && fields.length > 0 && (
+            <div style={{ marginTop: 12, fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', display: 'flex', justifyContent: 'center', gap: 20, flexWrap: 'wrap' }}>
+              <span><i className="fas fa-mouse-pointer"></i> Drag to move</span>
+              <span><i className="fas fa-arrows-alt"></i> Shift+Click multi-select</span>
+              <span><i className="fas fa-copy"></i> Ctrl+D duplicate</span>
+              <span><i className="fas fa-undo"></i> Ctrl+Z undo</span>
+              <span><i className="fas fa-arrow-up"></i> Arrow keys nudge</span>
+            </div>
+          )}
         </div>
 
         {/* PROPERTY PANEL */}
-        {!preview && selected && (
-          <aside style={{
-            width: 340, background:'var(--surface)',
-            borderLeft:'1px solid var(--border)',
-            overflowY:'auto', flexShrink: 0,
-            display:'flex', flexDirection:'column',
-          }}>
-            <div style={{
-              padding:'16px 20px',
-              background:'linear-gradient(135deg, var(--primary), var(--primary-dark))',
-              color:'white', display:'flex', justifyContent:'space-between', alignItems:'center'
-            }}>
-              <h3 style={{ fontSize:'0.9rem', fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
-                <i className="fas fa-sliders-h"></i> Field Properties
+        {!preview && sel && (
+          <aside style={{ width: 340, background: 'var(--surface)', borderLeft: '1px solid var(--border)', overflowY: 'auto', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '16px 20px', background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '0.9rem', fontWeight: 700, margin: 0 }}>
+                <i className="fas fa-sliders-h"></i> Properties
               </h3>
-              <button onClick={() => setSelectedId(null)}
-                style={{
-                  width:26, height:26, border:'none', background:'rgba(255,255,255,0.15)',
-                  color:'white', borderRadius:6, cursor:'pointer', fontSize:'0.7rem'
-                }}>
-                <i className="fas fa-times"></i>
+              <button onClick={() => setSelectedIds([])} style={{ width: 26, height: 26, border: 'none', background: 'rgba(255,255,255,0.15)', color: 'white', borderRadius: 6, cursor: 'pointer' }}>
+                <i className="fas fa-times" style={{ fontSize: '0.7rem' }}></i>
               </button>
             </div>
 
-            <div style={{ padding:20, display:'flex', flexDirection:'column', gap:16, overflowY:'auto', flex:1 }}>
-              <div style={{ fontSize:'0.72rem', color:'var(--text-muted)' }}>
-                Type: <strong>{selected.type}</strong>
+            <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', flex: 1 }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                Type: <strong style={{ color: 'var(--text)' }}>{sel.type}</strong>
               </div>
 
+              {/* Label */}
               <div>
-                <label style={{ fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', letterSpacing:0.4, color:'var(--text)', display:'block', marginBottom:6 }}>
-                  Label
-                </label>
-                <input
-                  value={selected.label}
-                  onChange={(e) => updateField(selected.id, { label: e.target.value })}
-                  placeholder="Field label"
-                  style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:6, fontSize:'0.85rem', outline:'none' }}
-                />
+                <label style={selStyles.lbl}>Label</label>
+                <input value={sel.label} onChange={(e) => updateField(sel.id, { label: e.target.value })} placeholder="Field label" style={selStyles.inp} />
               </div>
 
-              {['INPUT FIELD','TEXT AREA','COMMENTS','SELECT PHONE'].includes(selected.type) && (
+              {/* Placeholder — only for text-input types */}
+              {['INPUT FIELD','TEXT AREA','HEADING'].includes(sel.type) && (
                 <div>
-                  <label style={{ fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', letterSpacing:0.4, color:'var(--text)', display:'block', marginBottom:6 }}>
-                    Placeholder
-                  </label>
-                  <input
-                    value={selected.placeholder}
-                    onChange={(e) => updateField(selected.id, { placeholder: e.target.value })}
-                    placeholder="Hint text"
-                    style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:6, fontSize:'0.85rem', outline:'none' }}
-                  />
+                  <label style={selStyles.lbl}>Placeholder</label>
+                  <input value={sel.placeholder} onChange={(e) => updateField(sel.id, { placeholder: e.target.value })} placeholder="Hint text" style={selStyles.inp} />
                 </div>
               )}
 
-              {['SELECT BOX','SELECT CHILD BOX','RADIO BUTTON','CHECKBOX','LIST'].includes(selected.type) && (
+              {/* Options — only for SELECT / RADIO / CHECKBOX */}
+              {['SELECT BOX','RADIO BUTTON','CHECKBOX'].includes(sel.type) && (
                 <div>
-                  <label style={{ fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', letterSpacing:0.4, color:'var(--text)', display:'block', marginBottom:6 }}>
-                    Options (comma separated)
-                  </label>
-                  <textarea
-                    value={selected.options}
-                    onChange={(e) => updateField(selected.id, { options: e.target.value })}
-                    placeholder="Option 1, Option 2, Option 3"
-                    rows={3}
-                    style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:6, fontSize:'0.85rem', outline:'none', resize:'vertical', fontFamily:'inherit' }}
-                  />
+                  <label style={selStyles.lbl}>Options (comma separated)</label>
+                  <textarea value={sel.options} onChange={(e) => updateField(sel.id, { options: e.target.value })} rows={3} placeholder="Option 1, Option 2, Option 3" style={{ ...selStyles.inp, resize: 'vertical', fontFamily: 'inherit' }} />
                 </div>
               )}
 
-              <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:'0.85rem', cursor:'pointer' }}>
-                <input type="checkbox"
-                  checked={selected.required}
-                  onChange={(e) => updateField(selected.id, { required: e.target.checked })} />
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.85rem', cursor: 'pointer' }}>
+                <input type="checkbox" checked={sel.required} onChange={(e) => updateField(sel.id, { required: e.target.checked })} />
                 Required field
               </label>
 
-              {mode === 'grid' && (
-                <div>
-                  <label style={{ fontSize:'0.72rem', fontWeight:700, textTransform:'uppercase', letterSpacing:0.4, color:'var(--text)', display:'block', marginBottom:6 }}>
-                    Colspan (width)
-                  </label>
-                  <select
-                    value={selected.colspan || 1}
-                    onChange={(e) => updateField(selected.id, { colspan: parseInt(e.target.value) })}
-                    style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:6, fontSize:'0.85rem', outline:'none' }}
-                  >
-                    {[1,2,3,4].map(n => (
-                      <option key={n} value={n}>{n} column{n>1?'s':''}</option>
-                    ))}
-                  </select>
+              {/* Position */}
+              <div>
+                <label style={selStyles.lbl}>Position (X, Y)</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  <input type="number" value={Math.round(sel.x)} onChange={(e) => updateField(sel.id, { x: parseInt(e.target.value) || 0 })} style={selStyles.inp} />
+                  <input type="number" value={Math.round(sel.y)} onChange={(e) => updateField(sel.id, { y: parseInt(e.target.value) || 0 })} style={selStyles.inp} />
+                </div>
+              </div>
+
+              {/* Size */}
+              <div>
+                <label style={selStyles.lbl}>Size (W, H)</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  <input type="number" value={Math.round(sel.w)} onChange={(e) => updateField(sel.id, { w: parseInt(e.target.value) || 260 })} style={selStyles.inp} />
+                  <input type="number" value={Math.round(sel.h)} onChange={(e) => updateField(sel.id, { h: parseInt(e.target.value) || 90 })} style={selStyles.inp} />
+                </div>
+              </div>
+
+              {/* ★★★ DATA MAPPING — for ALL fields except buttons/headings ★★★ */}
+              {!NON_MAPPABLE.includes(sel.type) && (
+                <div style={{ padding: 14, background: 'var(--primary-light)', borderRadius: 10, border: '1px solid var(--primary)' }}>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--primary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <i className="fas fa-link"></i> Link to Data Column
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <label style={{ ...selStyles.lbl, fontSize: '0.68rem', color: 'var(--primary)' }}>Data Table</label>
+                    <select value={sel.targetTable || ''} onChange={(e) => updateField(sel.id, { targetTable: e.target.value, targetColumn: '' })} style={selStyles.inp}>
+                      <option value="">Not linked</option>
+                      {crmTables.map(t => <option key={t.id} value={t.name}>{t.displayName || t.name}</option>)}
+                    </select>
+                  </div>
+
+                  {sel.targetTable && (
+                    <div>
+                      <label style={{ ...selStyles.lbl, fontSize: '0.68rem', color: 'var(--primary)' }}>Data Column</label>
+                      <select value={sel.targetColumn || ''} onChange={(e) => updateField(sel.id, { targetColumn: e.target.value })} style={selStyles.inp}>
+                        <option value="">Choose column...</option>
+                        {tableCols.map(c => <option key={c.name} value={c.name}>{c.name} ({c.type})</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {sel.targetTable && sel.targetColumn && (
+                    <div style={{ marginTop: 10, fontSize: '0.72rem', color: 'var(--primary)', background: 'var(--surface)', padding: '8px 12px', borderRadius: 6, textAlign: 'center', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                      <i className="fas fa-check-circle"></i>
+                      Linked to "{sel.targetColumn}" ({selDbColType})
+                    </div>
+                  )}
                 </div>
               )}
 
-              <div style={{ height:1, background:'var(--border)', margin:'4px 0' }} />
-
-              <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:'0.85rem', cursor:'pointer' }}>
-                <input type="checkbox"
-                  checked={selected.floating}
-                  onChange={() => toggleFloat(selected.id)}
-                  disabled={mode !== 'free'} />
-                Free Position (absolute)
-              </label>
-
-              <button className="btn btn-grey"
-                onClick={() => removeField(selected.id)}
-                style={{ marginTop:8, width:'100%', justifyContent:'center', color:'var(--danger)', borderColor:'var(--danger)' }}>
+              <button onClick={() => { pushHistory(); setFields(p => p.filter(f => f.id !== sel.id)); setSelectedIds([]) }}
+                style={{ marginTop: 8, padding: '9px 14px', color: 'var(--danger)', border: '1px solid var(--danger)', background: 'var(--surface)', borderRadius: 6, fontWeight: 600, cursor: 'pointer' }}>
                 <i className="fas fa-trash"></i> Delete Field
               </button>
             </div>
           </aside>
         )}
       </div>
+
+      {themePanelOpen && !preview && (
+        <CrmThemePanel theme={theme} onChange={setTheme} onClose={() => setThemePanelOpen(false)} />
+      )}
     </>
   )
 }
 
-// ---------- Field block (label + control) ----------
-function FieldBlock({ field, selected, onUpdate, onDelete, onToggleFloat, isFloating }) {
-  return (
-    <>
-      <div style={{
-        display:'flex', justifyContent:'space-between', alignItems:'center',
-        marginBottom:6
-      }}>
-        <div style={{ fontSize:'0.78rem', fontWeight:700, color:'var(--text)' }}>
-          {field.label || <span style={{ opacity:0.4, fontStyle:'italic' }}>{field.type}</span>}
-          {field.required && <span style={{ color:'var(--danger)', marginLeft:3 }}>*</span>}
-        </div>
-        <div className="field-actions" style={{ display:'flex', gap:4, opacity: selected ? 1 : 0.6 }}>
-          <button onClick={onToggleFloat} title="Toggle free position"
-            style={{ width:22, height:22, border:'none', background:'transparent', color: isFloating ? 'var(--accent)' : 'var(--text-muted)', borderRadius:4, cursor:'pointer', fontSize:'0.7rem' }}>
-            <i className="fas fa-arrows-alt"></i>
-          </button>
-          <button onClick={onDelete} title="Delete"
-            style={{ width:22, height:22, border:'none', background:'transparent', color:'var(--text-muted)', borderRadius:4, cursor:'pointer', fontSize:'0.7rem' }}>
-            <i className="fas fa-trash"></i>
-          </button>
-        </div>
-      </div>
+function iconBtn(disabled) {
+  return {
+    width: 32, height: 32,
+    border: '1px solid var(--border)',
+    background: 'var(--surface)',
+    color: disabled ? 'var(--text-muted)' : 'var(--text)',
+    borderRadius: 6,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.5 : 1,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: '0.75rem',
+  }
+}
 
-      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-        <FieldControl field={field} onChange={onUpdate} />
-      </div>
-    </>
-  )
+const selStyles = {
+  toolbar: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: 14, padding: '8px 12px',
+    background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)',
+    flexWrap: 'wrap', gap: 8,
+  },
+  divider: { width: 1, height: 20, background: 'var(--border)', margin: '0 6px' },
+  btnGrey: { padding: '6px 12px', fontSize: '0.78rem' },
+  btnApply: {
+    padding: '6px 16px', fontSize: '0.78rem',
+    border: 'none', borderRadius: 6, color: 'white', fontWeight: 700,
+    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+  },
+  select: {
+    width: '100%', padding: '8px 10px',
+    border: '1px solid var(--border)', borderRadius: 6,
+    fontSize: '0.8rem', background: 'var(--surface)', color: 'var(--text)',
+    outline: 'none',
+  },
+  toolItem: {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
+    background: '#fafcff', border: '1px solid var(--border)', borderRadius: 6,
+    fontSize: '0.8rem', fontWeight: 500, cursor: 'grab', marginBottom: 6,
+    userSelect: 'none',
+  },
+  lbl: { fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, display: 'block', marginBottom: 6, color: 'var(--text)' },
+  inp: { width: '100%', padding: '9px 12px', border: '1px solid var(--border)', borderRadius: 6, fontSize: '0.85rem', outline: 'none', background: 'var(--surface)', color: 'var(--text)' },
 }

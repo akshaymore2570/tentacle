@@ -47,6 +47,7 @@ class User(db.Model):
             "username": self.username,
             "active": self.active,
             "roles": [r.id for r in self.roles],
+            "roleNames": [r.name for r in self.roles],
             "groups": [g.id for g in self.groups],
         }
 
@@ -129,3 +130,103 @@ class AppSetting(db.Model):
 
     def to_dict(self):
         return {"key": self.key, "value": self.value or {}}
+
+
+class LicenseRecord(db.Model):
+    __tablename__ = "license_records"
+    id = db.Column(db.Integer, primary_key=True)
+    customer = db.Column(db.String(150), nullable=False)
+    valid_from = db.Column(db.DateTime, nullable=False)
+    valid_until = db.Column(db.DateTime, nullable=False)
+    serial = db.Column(db.String(64))
+    features = db.Column(db.JSON, default=list)
+    filename = db.Column(db.String(255))
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "customer": self.customer,
+            "validFrom": self.valid_from.isoformat(),
+            "validUntil": self.valid_until.isoformat(),
+            "serial": self.serial,
+            "features": self.features or [],
+            "filename": self.filename,
+            "uploadedAt": self.uploaded_at.isoformat() if self.uploaded_at else None,
+        }
+
+
+class CrmTable(db.Model):
+    """A CRM Table = a data table definition created by user.
+    Creates real Postgres table: {name}_stagging
+    Columns are dynamic (defined in `columns` JSON).
+    """
+    __tablename__ = "crm_tables"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(150), nullable=False, unique=True)
+    display_name = db.Column(db.String(150))
+    description = db.Column(db.Text, default="")
+    interactions = db.Column(db.JSON, default=list)   # ["Call", "Email", ...]
+    phone_column_name = db.Column(db.String(80), default="phone")
+    phone_column_count = db.Column(db.Integer, default=1)
+    columns = db.Column(db.JSON, default=list)
+    # columns: [{"name": "leadid", "type": "varchar", "primaryKey": false, "mask": false, "updateTimestamp": false}, ...]
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def staging_table_name(self):
+        import re
+        base = re.sub(r'[^a-zA-Z0-9_]', '_', (self.name or '').strip().lower())
+        base = re.sub(r'_+', '_', base).strip('_')
+        if base and base[0].isdigit():
+            base = 'c_' + base
+        return f"{base}_stagging" if base else None
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "displayName": self.display_name or self.name,
+            "description": self.description or "",
+            "interactions": self.interactions or [],
+            "phoneColumnName": self.phone_column_name or "phone",
+            "phoneColumnCount": self.phone_column_count or 1,
+            "columns": self.columns or [],
+            "stagingTable": self.staging_table_name(),
+        }
+
+
+class CampaignFull(db.Model):
+    """Full campaign entity — stored in ten_campaigns table."""
+    __tablename__ = "ten_campaigns"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, default="")
+    status = db.Column(db.String(50), default="INACTIVE")  # ACTIVE/INACTIVE/PAUSED
+    auto_dispose = db.Column(db.String(50), default="DISALLOW")
+    crm_id = db.Column(db.Integer, db.ForeignKey("crm_designs.id", ondelete="SET NULL"), nullable=True)
+    crm_history = db.Column(db.String(10), default="NO")  # YES/NO
+    start_call_url = db.Column(db.String(500), default="")
+    mask = db.Column(db.String(50), default="")
+    dispositions = db.Column(db.JSON, default=list)
+    skills = db.Column(db.JSON, default=list)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description or "",
+            "status": self.status or "INACTIVE",
+            "autoDispose": self.auto_dispose or "DISALLOW",
+            "crmId": self.crm_id,
+            "crmHistory": self.crm_history or "NO",
+            "startCallUrl": self.start_call_url or "",
+            "mask": self.mask or "",
+            "dispositions": self.dispositions or [],
+            "skills": self.skills or [],
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
