@@ -5,7 +5,6 @@ const MENU = [
   { action: 'crm',            icon: 'fa-table',           title: 'CRM',             desc: 'Manage and design your CRM forms' },
   { action: 'crm-tables',     icon: 'fa-database',        title: 'CRM Tables',      desc: 'Define data tables with custom columns' },
   { action: 'dispositions',   icon: 'fa-clipboard-list',  title: 'Dispositions',    desc: 'Manage call dispositions and outcomes' },
-  { action: 'sub-campaign',   icon: 'fa-layer-group',     title: 'Sub Campaign',    desc: 'Manage sub-campaigns and lists' },
 ]
 
 export default function Campaign() {
@@ -14,6 +13,7 @@ export default function Campaign() {
     if (action === 'campaigns') navigate('/campaigns')
     if (action === 'crm') navigate('/crm')
     if (action === 'crm-tables') navigate('/crm-table')
+    if (action === 'dispositions') navigate('/dispositions')
   }
 
   return (

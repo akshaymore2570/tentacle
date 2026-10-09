@@ -103,9 +103,6 @@ class Campaign(db.Model):
 class CrmDesign(db.Model):
     __tablename__ = "crm_designs"
     id = db.Column(db.Integer, primary_key=True)
-    campaign_id = db.Column(db.Integer, db.ForeignKey("ten_campaigns.id", ondelete="SET NULL"), nullable=True)
-    sub_campaign = db.Column(db.String(150), nullable=True)
-    crm_table_id = db.Column(db.Integer, db.ForeignKey("crm_tables.id", ondelete="SET NULL"), nullable=True)
     name = db.Column(db.String(150), nullable=False)
     description = db.Column(db.Text, default="")
     fields = db.Column(db.JSON, default=list)
@@ -117,9 +114,6 @@ class CrmDesign(db.Model):
     def to_dict(self):
         return {
             "id": self.id,
-            "campaignId": self.campaign_id,
-            "subCampaign": self.sub_campaign or "",
-            "crmTableId": self.crm_table_id,
             "name": self.name,
             "description": self.description or "",
             "fields": self.fields or [],
@@ -171,8 +165,6 @@ class CrmTable(db.Model):
     __tablename__ = "crm_tables"
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(150), nullable=False, unique=True)
-    campaign_id = db.Column(db.Integer, db.ForeignKey("ten_campaigns.id", ondelete="SET NULL"), nullable=True)
-    sub_campaign = db.Column(db.String(150), nullable=True)
     display_name = db.Column(db.String(150))
     description = db.Column(db.Text, default="")
     interactions = db.Column(db.JSON, default=list)   # ["Call", "Email", ...]
@@ -184,22 +176,6 @@ class CrmTable(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def staging_table_name(self):
-        """
-        Returns the STAGING table name for this CRM table.
-        Uses campaign's staging table if linked.
-        Falls back to {name}_stagging for legacy tables.
-        """
-        # If linked to campaign, use campaign's staging
-        if self.campaign_id:
-            try:
-                from models import CampaignFull
-                campaign = CampaignFull.query.get(self.campaign_id)
-                if campaign and campaign.staging_table:
-                    return campaign.staging_table
-            except Exception:
-                pass
-
-        # Legacy fallback: {name}_stagging
         import re
         base = re.sub(r'[^a-zA-Z0-9_]', '_', (self.name or '').strip().lower())
         base = re.sub(r'_+', '_', base).strip('_')
@@ -211,8 +187,6 @@ class CrmTable(db.Model):
         return {
             "id": self.id,
             "name": self.name,
-            "campaignId": self.campaign_id,
-            "subCampaign": self.sub_campaign or "",
             "displayName": self.display_name or self.name,
             "description": self.description or "",
             "interactions": self.interactions or [],
@@ -343,51 +317,3 @@ class CrmLead(db.Model):
             "_phone": self.phone,
         })
         return d
-
-
-class Disposition(db.Model):
-    """Master Dispositions — centralized list, used across campaigns."""
-    __tablename__ = "ten_dispositions"
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(150), nullable=False)
-    code = db.Column(db.String(50), unique=True, nullable=True)
-    description = db.Column(db.Text, default="")
-
-    # ★ Type: 'system' | 'auto' | 'agent'
-    disposition_type = db.Column(db.String(20), default="agent")
-
-    # Churn type
-    churn_type = db.Column(db.String(20), default="non-churn")
-
-    # Status
-    status = db.Column(db.String(20), default="ACTIVE")
-
-    # Appearance
-    color = db.Column(db.String(20), default="#6b7d91")
-    icon = db.Column(db.String(50), default="fa-tag")
-    sort_order = db.Column(db.Integer, default=0)
-
-    # ★ Flags
-    is_success = db.Column(db.Boolean, default=False)      # Sale flag
-    is_dnc = db.Column(db.Boolean, default=False)          # Do Not Call
-    requires_callback = db.Column(db.Boolean, default=False)  # Callback needed
-
-    # ★ Auto disposition config
-    auto_timeout_sec = db.Column(db.Integer, default=0)    # Auto-set after X sec (0 = manual)
-
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "name": self.name,
-            "code": self.code or "",
-            "description": self.description or "",
-            "churnType": self.churn_type or "non-churn",
-            "status": self.status or "ACTIVE",
-            "color": self.color or "#6b7d91",
-            "sortOrder": self.sort_order or 0,
-            "createdAt": self.created_at.isoformat() if self.created_at else None,
-            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
-        }

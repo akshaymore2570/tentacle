@@ -20,6 +20,11 @@ export default function LeftNav({ onOpenTheme }) {
         <i className="fas fa-bullhorn"></i><span>Campaign</span>
       </div>
 
+      <div className={`nav-item ${active('/batch-maintenance') ? 'active' : ''}`}
+        onClick={() => navigate('/batch-maintenance')}>
+        <i className="fas fa-layer-group"></i><span>Batch Maintenance</span>
+      </div>
+
       <div className={`nav-item ${active('/users') ? 'active' : ''}`}
         onClick={() => navigate('/users')}>
         <i className="fas fa-users"></i><span>Users</span>

@@ -95,7 +95,7 @@ export default function CrmTableBuilder({ showToast }) {
       let res
       if (isEdit) res = await api.put('/crm-tables/' + id, payload)
       else res = await api.post('/crm-tables', payload)
-      showToast && showToast('Table "' + res.data.name + '" created')
+      showToast && showToast('Table "' + res.data.stagingTable + '" created')
       navigate('/crm-table')
     } catch (e) {
       showToast && showToast(e.response?.data?.error || 'Save failed')
@@ -104,7 +104,7 @@ export default function CrmTableBuilder({ showToast }) {
     }
   }
 
-  const campaign = campaigns.find(c => String(c.id) === String(campaignId))
+  const stagingTable = name ? name + '_stagging' : '—'
 
   // Common styles using theme variables
   const inputStyle = {
@@ -206,17 +206,19 @@ export default function CrmTableBuilder({ showToast }) {
             e.target.style.boxShadow = 'none'
           }}
         />
-        {campaign && (
-          <div style={{
-            fontSize: '0.76rem', color: 'var(--primary)', marginTop: 6,
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'var(--primary-light)', padding: '8px 12px',
-            borderRadius: 6,
+        <div style={{
+          fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 6,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <i className="fas fa-info-circle" style={{ color: 'var(--primary)' }}></i>
+          Table identifier:&nbsp;
+          <strong style={{
+            color: 'var(--primary)', fontFamily: 'monospace',
+            background: 'var(--primary-light)', padding: '2px 8px', borderRadius: 4,
           }}>
-            <i className="fas fa-info-circle"></i>
-            Data will be stored in: <strong style={{ fontFamily: 'monospace' }}>{campaign.stagingTable || '—'}</strong>
-          </div>
-        )}
+            {stagingTable}
+          </strong>
+        </div>
       </div>
 
 

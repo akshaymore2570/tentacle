@@ -95,7 +95,7 @@ export default function CrmTableBuilder({ showToast }) {
       let res
       if (isEdit) res = await api.put('/crm-tables/' + id, payload)
       else res = await api.post('/crm-tables', payload)
-      showToast && showToast('Table "' + res.data.name + '" created')
+      showToast && showToast('Table "' + res.data.stagingTable + '" created')
       navigate('/crm-table')
     } catch (e) {
       showToast && showToast(e.response?.data?.error || 'Save failed')
@@ -104,7 +104,7 @@ export default function CrmTableBuilder({ showToast }) {
     }
   }
 
-  const campaign = campaigns.find(c => String(c.id) === String(campaignId))
+  const stagingTable = name ? name + '_stagging' : '—'
 
   // Common styles using theme variables
   const inputStyle = {
@@ -206,79 +206,18 @@ export default function CrmTableBuilder({ showToast }) {
             e.target.style.boxShadow = 'none'
           }}
         />
-        {campaign && (
-          <div style={{
-            fontSize: '0.76rem', color: 'var(--primary)', marginTop: 6,
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'var(--primary-light)', padding: '8px 12px',
-            borderRadius: 6,
+        <div style={{
+          fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 6,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <i className="fas fa-info-circle" style={{ color: 'var(--primary)' }}></i>
+          Table identifier:&nbsp;
+          <strong style={{
+            color: 'var(--primary)', fontFamily: 'monospace',
+            background: 'var(--primary-light)', padding: '2px 8px', borderRadius: 4,
           }}>
-            <i className="fas fa-info-circle"></i>
-            Data will be stored in: <strong style={{ fontFamily: 'monospace' }}>{campaign.stagingTable || '—'}</strong>
-          </div>
-        )}
-      </div>
-
-
-      {/* ★ CAMPAIGN + SUB-CAMPAIGN ============ */}
-      <div style={{ marginBottom: 26 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-          <div>
-            <label style={labelStyle}>
-              Campaign <span style={requiredStar}>*</span>
-            </label>
-            <select
-              value={campaignId}
-              onChange={(e) => { setCampaignId(e.target.value); setSubCampaign('') }}
-              style={inputStyle}
-            >
-              <option value="">-- Select Campaign --</option>
-              {campaigns.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-            <div style={{
-              fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 6,
-              display: 'flex', alignItems: 'center', gap: 6,
-            }}>
-              <i className="fas fa-info-circle" style={{ color: 'var(--primary)' }}></i>
-              CRM Table will be linked to this campaign
-            </div>
-          </div>
-          <div>
-            <label style={labelStyle}>
-              Sub-Campaign <span style={requiredStar}>*</span>
-            </label>
-            <select
-              value={subCampaign}
-              onChange={(e) => setSubCampaign(e.target.value)}
-              disabled={!campaignId}
-              style={inputStyle}
-            >
-              <option value="">-- Select Sub-Campaign --</option>
-              {subCampaigns.map(s => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-            {campaignId && subCampaigns.length === 0 && (
-              <div style={{
-                fontSize: '0.76rem', color: 'var(--danger)', marginTop: 6,
-                display: 'flex', alignItems: 'center', gap: 6,
-              }}>
-                <i className="fas fa-exclamation-triangle"></i>
-                No sub-campaigns (skills) defined for this campaign
-              </div>
-            )}
-            {!campaignId && (
-              <div style={{
-                fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 6,
-                display: 'flex', alignItems: 'center', gap: 6,
-              }}>
-                <i className="fas fa-info-circle" style={{ color: 'var(--primary)' }}></i>
-                Select a campaign first
-              </div>
-            )}
-          </div>
+            {stagingTable}
+          </strong>
         </div>
       </div>
 

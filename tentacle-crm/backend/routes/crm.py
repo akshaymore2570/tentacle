@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
 from extensions import db
-from models import CrmDesign, CrmTable
+from models import CrmDesign, CampaignFull, CrmTable
 
 crm_bp = Blueprint("crm", __name__, url_prefix="/api/crm")
 
@@ -9,20 +9,55 @@ crm_bp = Blueprint("crm", __name__, url_prefix="/api/crm")
 @crm_bp.get("")
 @jwt_required()
 def list_crms():
-    items = CrmDesign.query.order_by(CrmDesign.updated_at.desc()).all()
-    return jsonify([c.to_dict() for c in items])
+    """
+    List CRM designs.
+    Filters: ?campaignId=X&subCampaign=Y&crmTableId=Z
+    """
+    campaign_id = request.args.get('campaignId', type=int)
+    sub_campaign = request.args.get('subCampaign')
+    crm_table_id = request.args.get('crmTableId', type=int)
+
+    q = CrmDesign.query
+    if campaign_id:
+        q = q.filter(CrmDesign.campaign_id == campaign_id)
+    if sub_campaign:
+        q = q.filter(CrmDesign.sub_campaign == sub_campaign)
+    if crm_table_id:
+        q = q.filter(CrmDesign.crm_table_id == crm_table_id)
+
+    items = q.order_by(CrmDesign.updated_at.desc()).all()
+    out = []
+    for c in items:
+        d = c.to_dict()
+        # Attach campaign + sub-campaign + table names
+        if c.campaign_id:
+            camp = CampaignFull.query.get(c.campaign_id)
+            d['campaignName'] = camp.name if camp else None
+        if c.crm_table_id:
+            t = CrmTable.query.get(c.crm_table_id)
+            d['crmTableName'] = t.name if t else None
+        out.append(d)
+    return jsonify(out)
 
 
 @crm_bp.post("")
 @jwt_required()
 def create_crm():
     data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "CRM name is required"}), 400
+
     crm = CrmDesign(
-        name=data.get("name") or "Untitled CRM",
+        name=name,
         description=data.get("description") or "",
         fields=data.get("fields") or [],
         theme=data.get("theme") or {},
         field_count=len(data.get("fields") or []),
+        # ★ New fields
+        campaign_id=data.get("campaignId") or None,
+        sub_campaign=data.get("subCampaign") or None,
+        crm_table_id=data.get("crmTableId") or None,
     )
     db.session.add(crm)
     db.session.commit()
@@ -33,7 +68,14 @@ def create_crm():
 @jwt_required()
 def get_crm(crm_id):
     crm = CrmDesign.query.get_or_404(crm_id)
-    return jsonify(crm.to_dict())
+    d = crm.to_dict()
+    if crm.campaign_id:
+        camp = CampaignFull.query.get(crm.campaign_id)
+        d['campaignName'] = camp.name if camp else None
+    if crm.crm_table_id:
+        t = CrmTable.query.get(crm.crm_table_id)
+        d['crmTableName'] = t.name if t else None
+    return jsonify(d)
 
 
 @crm_bp.put("/<int:crm_id>")
@@ -41,12 +83,18 @@ def get_crm(crm_id):
 def update_crm(crm_id):
     crm = CrmDesign.query.get_or_404(crm_id)
     data = request.get_json() or {}
+
     if "name" in data: crm.name = data["name"]
     if "description" in data: crm.description = data["description"]
     if "fields" in data:
         crm.fields = data["fields"]
         crm.field_count = len(data["fields"] or [])
     if "theme" in data: crm.theme = data["theme"]
+    # ★ New fields
+    if "campaignId" in data: crm.campaign_id = data["campaignId"] or None
+    if "subCampaign" in data: crm.sub_campaign = data["subCampaign"] or None
+    if "crmTableId" in data: crm.crm_table_id = data["crmTableId"] or None
+
     db.session.commit()
     return jsonify(crm.to_dict())
 
@@ -60,60 +108,28 @@ def delete_crm(crm_id):
     return jsonify({"ok": True})
 
 
-# ==================================================
-# ============ FORM SUBMIT → staging table ==========
-# ==================================================
-@crm_bp.post("/<int:crm_id>/submit")
+@crm_bp.get("/by-campaign-table")
 @jwt_required()
-def submit_form(crm_id):
+def by_campaign_table():
     """
-    Save a form submission.
-    For fields of type 'CRM_TABLE_FIELD' (or with targetTable/targetColumn),
-    inserts a row into the mapped staging table.
-    Other fields ignored (or could be stored in a separate submissions table).
+    Find a CRM design by campaign + sub_campaign + crm_table_id.
+    Used by Batch Builder to check if a design exists for this table.
     """
-    import re
-    from sqlalchemy import text, inspect
+    campaign_id = request.args.get('campaignId', type=int)
+    sub_campaign = request.args.get('subCampaign')
+    crm_table_id = request.args.get('crmTableId', type=int)
 
-    crm = CrmDesign.query.get_or_404(crm_id)
-    data = request.get_json() or {}
+    if not crm_table_id:
+        return jsonify({"error": "crmTableId required"}), 400
 
-    fields = crm.fields or []
+    q = CrmDesign.query.filter(CrmDesign.crm_table_id == crm_table_id)
+    if campaign_id:
+        q = q.filter(CrmDesign.campaign_id == campaign_id)
+    if sub_campaign:
+        q = q.filter(CrmDesign.sub_campaign == sub_campaign)
 
-    # Group mappings by target table
-    by_table = {}
-    for f in fields:
-        tname = f.get('targetTable')
-        cname = f.get('targetColumn')
-        fid = f.get('id')
-        if not tname or not cname:
-            continue
-        val = data.get(fid)
-        if val is None or val == '':
-            continue
-        by_table.setdefault(tname, {})[cname] = val
+    crm = q.first()
+    if not crm:
+        return jsonify({"exists": False, "crm": None})
 
-    if not by_table:
-        return jsonify({'error': 'No mapped columns in this CRM'}), 400
-
-    inserted = []
-    for tname, cols in by_table.items():
-        # Verify table exists
-        insp = inspect(db.engine)
-        if tname not in insp.get_table_names():
-            return jsonify({'error': f'Staging table "{tname}" not found'}), 400
-
-        # Only allow columns that actually exist
-        real_cols = [c['name'] for c in insp.get_columns(tname)]
-        clean = {k: v for k, v in cols.items() if k in real_cols}
-        if not clean:
-            continue
-
-        cols_sql = ', '.join(f'"{k}"' for k in clean.keys())
-        vals_sql = ', '.join(f':{k}' for k in clean.keys())
-        sql = text(f'INSERT INTO "{tname}" ({cols_sql}) VALUES ({vals_sql}) RETURNING id')
-        new_id = db.session.execute(sql, clean).scalar()
-        inserted.append({'table': tname, 'id': new_id})
-
-    db.session.commit()
-    return jsonify({'ok': True, 'inserted': inserted}), 201
+    return jsonify({"exists": True, "crm": crm.to_dict()})

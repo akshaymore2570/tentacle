@@ -12,6 +12,8 @@ from routes.theme import theme_bp
 from routes.license import license_bp
 from routes.crm_tables import crm_tables_bp
 from routes.campaigns import campaigns_bp
+from routes.batches import batches_bp
+from routes.dispositions import dispositions_bp
 
 from license_manager import verify_license
 
@@ -52,6 +54,8 @@ def create_app():
     app.register_blueprint(license_bp)
     app.register_blueprint(crm_tables_bp)
     app.register_blueprint(campaigns_bp)
+    app.register_blueprint(batches_bp)
+    app.register_blueprint(dispositions_bp)
 
     @app.before_request
     def enforce_license():

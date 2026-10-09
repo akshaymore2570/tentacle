@@ -1,0 +1,895 @@
+"""
+Batch Management — High Performance
+Features:
+- Dashboard stats (cached)
+- CRUD batches
+- File upload (CSV/Excel)
+- Start (activate) → data to {crm}_working
+- Stop (deactivate) → clear working
+- Restart → stop + start
+"""
+import re
+import io
+import csv
+import json
+from datetime import datetime
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required
+from sqlalchemy import text, inspect
+from extensions import db
+from models import Batch, CrmTable, CampaignFull, CrmLead
+
+batches_bp = Blueprint("batches", __name__, url_prefix="/api/batches")
+
+PAGE_SIZE = 50
+MAX_PAGE_SIZE = 200
+
+
+# ============ HELPERS ============
+
+def table_exists(tname):
+    return tname in inspect(db.engine).get_table_names()
+
+
+def sanitize_identifier(name):
+    if not name:
+        return None
+    s = re.sub(r'[^a-zA-Z0-9_]', '_', str(name).strip().lower())
+    s = re.sub(r'_+', '_', s).strip('_')
+    if s and s[0].isdigit():
+        s = 'c_' + s
+    return s or None
+
+
+def working_table_name(crm_table_name):
+    base = sanitize_identifier(crm_table_name)
+    return f"{base}_working" if base else None
+
+
+def get_phone_column(crm_table):
+    cols = crm_table.columns or []
+    for c in cols:
+        name = (c.get('name') or '').lower()
+        if 'phone' in name or 'mobile' in name or 'cell' in name:
+            return c.get('name')
+    return cols[0].get('name') if cols else None
+
+
+def compute_batch_stats(batch_id):
+    sql = text('''
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE dial_status = 'pending') AS pending,
+            COUNT(*) FILTER (WHERE dial_status = 'called') AS called,
+            COUNT(*) FILTER (WHERE dial_status = 'connected') AS connected,
+            COUNT(*) FILTER (WHERE dial_status = 'completed') AS completed,
+            COUNT(*) FILTER (WHERE dial_status = 'failed') AS failed
+        FROM ten_crm_leads
+        WHERE batch_id = :bid
+    ''')
+    row = db.session.execute(sql, {'bid': batch_id}).mappings().first()
+    if not row:
+        return {"total": 0, "pending": 0, "called": 0, "connected": 0, "completed": 0, "failed": 0}
+    return {
+        "total": row['total'] or 0,
+        "pending": row['pending'] or 0,
+        "called": row['called'] or 0,
+        "connected": row['connected'] or 0,
+        "completed": row['completed'] or 0,
+        "failed": row['failed'] or 0,
+    }
+
+
+def refresh_batch_cache(batch_id):
+    stats = compute_batch_stats(batch_id)
+    Batch.query.filter_by(id=batch_id).update({'cached_stats': stats})
+    db.session.commit()
+    return stats
+
+
+def paginate_args():
+    page = max(1, request.args.get('page', 1, type=int))
+    size = min(MAX_PAGE_SIZE, max(1, request.args.get('size', PAGE_SIZE, type=int)))
+    return page, size, (page - 1) * size
+
+
+def ensure_working_table(working_name, staging_name):
+    """Create working table if not exists (structure clone of staging)."""
+    if table_exists(working_name):
+        return
+    # Clone structure only
+    db.session.execute(text(f'CREATE TABLE "{working_name}" (LIKE "{staging_name}" INCLUDING DEFAULTS)'))
+    # Add batch columns
+    for col, ctype in [
+        ('batch_id', 'INTEGER'),
+        ('priority', 'SMALLINT'),
+        ('dial_status', 'VARCHAR(20) DEFAULT \'pending\''),
+        ('assigned_agent_id', 'INTEGER'),
+        ('attempts', 'SMALLINT DEFAULT 0'),
+        ('last_dial_at', 'TIMESTAMP'),
+        ('last_disposition', 'VARCHAR(80)'),
+        ('last_agent_id', 'INTEGER'),
+    ]:
+        db.session.execute(text(f'ALTER TABLE "{working_name}" ADD COLUMN IF NOT EXISTS "{col}" {ctype}'))
+    # Index
+    db.session.execute(text(f'CREATE INDEX IF NOT EXISTS idx_{working_name}_batch ON "{working_name}" (batch_id, dial_status, priority, id)'))
+    db.session.commit()
+
+
+# ==================================================
+# ============ DASHBOARD STATS ======================
+# ==================================================
+
+@batches_bp.get("/stats")
+@jwt_required()
+def dashboard_stats():
+    """Global stats for dashboard — one query."""
+    sql = text('''
+        SELECT
+            COUNT(*) AS total_batches,
+            COUNT(*) FILTER (WHERE status = 'active') AS active_batches,
+            COUNT(*) FILTER (WHERE status = 'inactive') AS inactive_batches,
+            COUNT(*) FILTER (WHERE status = 'draft') AS draft_batches,
+            COALESCE(SUM((cached_stats->>'total')::int), 0) AS total_records
+        FROM ten_batches
+    ''')
+    row = db.session.execute(sql).mappings().first()
+    return jsonify({
+        "totalBatches": row['total_batches'] or 0,
+        "activeBatches": row['active_batches'] or 0,
+        "inactiveBatches": row['inactive_batches'] or 0,
+        "draftBatches": row['draft_batches'] or 0,
+        "totalRecords": int(row['total_records'] or 0),
+    })
+
+
+# ==================================================
+# ============ LIST =================================
+# ==================================================
+
+@batches_bp.get("")
+@jwt_required()
+def list_batches():
+    status = request.args.get('status')
+    search = (request.args.get('search') or '').strip().lower()
+    campaign_id = request.args.get('campaignId', type=int)
+
+    q = Batch.query
+    if status and status != 'all':
+        if status == 'active':
+            q = q.filter(Batch.status.in_(['active', 'paused']))
+        elif status == 'inactive':
+            q = q.filter(Batch.status.in_(['inactive', 'completed']))
+        else:
+            q = q.filter(Batch.status == status)
+    if campaign_id:
+        q = q.filter(Batch.campaign_id == campaign_id)
+    if search:
+        q = q.filter(db.func.lower(Batch.name).like(f'%{search}%'))
+
+    batches = q.order_by(Batch.priority.asc(), Batch.created_at.desc()).all()
+
+    # Batch-fetch campaign / CRM names (no N+1)
+    campaign_ids = list({b.campaign_id for b in batches if b.campaign_id})
+    crm_ids = list({b.crm_table_id for b in batches if b.crm_table_id})
+
+    campaign_map = {}
+    if campaign_ids:
+        for c in CampaignFull.query.filter(CampaignFull.id.in_(campaign_ids)).all():
+            campaign_map[c.id] = c.name
+    crm_map = {}
+    if crm_ids:
+        for t in CrmTable.query.filter(CrmTable.id.in_(crm_ids)).all():
+            crm_map[t.id] = t.name
+
+    out = []
+    for b in batches:
+        d = b.to_dict()
+        d['campaignName'] = campaign_map.get(b.campaign_id)
+        d['crmTableName'] = crm_map.get(b.crm_table_id)
+        stats = b.cached_stats or {}
+        d['totalRecords'] = stats.get('total', b.total_records or 0)
+        d['activeRecords'] = stats.get('called', 0)
+        out.append(d)
+
+    return jsonify(out)
+
+
+# ==================================================
+# ============ CREATE ===============================
+# ==================================================
+
+@batches_bp.post("")
+@jwt_required()
+def create_batch():
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Batch name is required"}), 400
+
+    crm_table_id = data.get("crmTableId")
+    if not crm_table_id:
+        return jsonify({"error": "CRM Table is required"}), 400
+
+    ct = CrmTable.query.get(crm_table_id)
+    if not ct:
+        return jsonify({"error": "CRM table not found"}), 404
+
+    staging_name = ct.staging_table_name()
+    working_name = working_table_name(ct.name)
+
+    b = Batch(
+        name=name,
+        description=data.get("description") or "",
+        campaign_id=data.get("campaignId") or None,
+        sub_campaign=data.get("subCampaign") or "",
+        crm_table_id=crm_table_id,
+        priority=int(data.get("priority") or 3),
+        status="draft",
+        cached_stats={"total": 0, "pending": 0, "called": 0, "connected": 0, "completed": 0, "failed": 0},
+        staging_table=staging_name,
+        uploaded_rows=0,
+    )
+    db.session.add(b)
+    db.session.commit()
+    return jsonify(b.to_dict()), 201
+
+
+# ==================================================
+# ============ GET ONE ==============================
+# ==================================================
+
+@batches_bp.get("/<int:bid>")
+@jwt_required()
+def get_batch(bid):
+    b = Batch.query.get_or_404(bid)
+    d = b.to_dict()
+    d['stagingTable'] = b.staging_table
+    d['uploadedRows'] = b.uploaded_rows or 0
+    d['sourceFile'] = b.source_file
+    if b.campaign_id:
+        c = CampaignFull.query.get(b.campaign_id)
+        d['campaignName'] = c.name if c else None
+    if b.crm_table_id:
+        t = CrmTable.query.get(b.crm_table_id)
+        d['crmTableName'] = t.name if t else None
+        d['workingTable'] = working_table_name(t.name)
+    return jsonify(d)
+
+
+# ==================================================
+# ============ UPDATE ===============================
+# ==================================================
+
+@batches_bp.put("/<int:bid>")
+@jwt_required()
+def update_batch(bid):
+    b = Batch.query.get_or_404(bid)
+    data = request.get_json() or {}
+
+    if b.status == 'active':
+        return jsonify({"error": "Cannot edit active batch. Stop it first."}), 400
+
+    if 'name' in data: b.name = data['name']
+    if 'description' in data: b.description = data['description']
+    if 'campaignId' in data: b.campaign_id = data['campaignId'] or None
+    if 'subCampaign' in data: b.sub_campaign = data['subCampaign'] or ""
+    if 'crmTableId' in data:
+        b.crm_table_id = data['crmTableId'] or None
+        if b.crm_table_id:
+            ct = CrmTable.query.get(b.crm_table_id)
+            if ct:
+                b.staging_table = ct.staging_table_name()
+    if 'priority' in data: b.priority = int(data['priority'] or 3)
+
+    db.session.commit()
+    return jsonify(b.to_dict())
+
+
+# ==================================================
+# ============ DELETE ===============================
+# ==================================================
+
+@batches_bp.delete("/<int:bid>")
+@jwt_required()
+def delete_batch(bid):
+    b = Batch.query.get_or_404(bid)
+
+    # If active, clear first
+    if b.status == 'active':
+        # Detach leads
+        CrmLead.query.filter_by(batch_id=bid).update({'batch_id': None})
+    else:
+        CrmLead.query.filter_by(batch_id=bid).delete()
+
+    db.session.delete(b)
+    db.session.commit()
+    return jsonify({"ok": True, "message": "Batch deleted"})
+
+
+# ==================================================
+# ============ FILE UPLOAD ==========================
+# ==================================================
+
+@batches_bp.post("/<int:bid>/upload")
+@jwt_required()
+def upload_file(bid):
+    """
+    Upload CSV file with leads.
+    Data goes DIRECTLY to {campaign}_stagging table.
+    """
+    b = Batch.query.get_or_404(bid)
+
+    if b.status == 'active':
+        return jsonify({"error": "Cannot upload to active batch. Stop it first."}), 400
+
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({"error": "Empty file"}), 400
+
+    ext = file.filename.rsplit('.', 1)[-1].lower()
+    if ext not in ('csv', 'txt'):
+        return jsonify({"error": "Only CSV files are supported"}), 400
+
+    if not b.campaign_id:
+        return jsonify({"error": "Batch not linked to campaign"}), 400
+
+    if not b.crm_table_id:
+        return jsonify({"error": "CRM table not assigned"}), 400
+
+    campaign = CampaignFull.query.get(b.campaign_id)
+    if not campaign:
+        return jsonify({"error": "Campaign not found"}), 404
+
+    # ★ Use CAMPAIGN's staging table
+    staging_table = campaign.staging_table
+    if not staging_table:
+        return jsonify({"error": "Campaign has no staging table"}), 400
+
+    if not table_exists(staging_table):
+        return jsonify({"error": f"Staging table {staging_table} does not exist"}), 400
+
+    ct = CrmTable.query.get(b.crm_table_id)
+
+    try:
+        content = file.read().decode('utf-8', errors='ignore')
+        reader = csv.DictReader(io.StringIO(content))
+        rows = list(reader)
+
+        if not rows:
+            return jsonify({"error": "CSV has no data rows"}), 400
+
+        total_rows = len(rows)
+
+        # Get actual columns of staging table
+        insp = inspect(db.engine)
+        staging_cols = [c['name'] for c in insp.get_columns(staging_table)]
+
+        # Reserved columns (auto-managed)
+        reserved = {
+            'id', 'batch_id', 'priority', 'dial_status',
+            'total_attempts', 'total_connected', 'total_talk_time',
+            'last_dial_at', 'next_dial_at', 'last_disposition',
+            'last_agent_id', 'created_at', 'updated_at',
+            'phone',  # ★ Already handled separately
+        }
+
+        # Delete old entries for this batch
+        db.session.execute(
+            text(f'DELETE FROM "{staging_table}" WHERE batch_id = :bid'),
+            {'bid': bid}
+        )
+        db.session.commit()
+
+        phone_col = get_phone_column(ct) if ct else None
+
+        inserted = 0
+        errors = 0
+
+        for row in rows:
+            row_clean = {k.strip(): v for k, v in row.items() if k and k.strip()}
+
+            # Phone value
+            phone = ''
+            if phone_col and phone_col in row_clean:
+                phone = str(row_clean[phone_col] or '').strip()
+            else:
+                for k, v in row_clean.items():
+                    if 'phone' in k.lower() or 'mobile' in k.lower():
+                        phone = str(v or '').strip()
+                        break
+
+            # Columns from CSV that exist in staging
+            csv_cols = [k for k in row_clean.keys() if k in staging_cols and k not in reserved]
+
+            # Build dynamic INSERT
+            all_cols = list(csv_cols) + ['batch_id', 'priority', 'dial_status', 'phone', 'data']
+            placeholders = []
+            params = {}
+
+            for i, c in enumerate(csv_cols):
+                placeholders.append(f'"{c}"')
+                params[f'c{i}'] = row_clean[c]
+
+            placeholders.extend(['"batch_id"', '"priority"', '"dial_status"', '"phone"', '"data"'])
+
+            value_sql_parts = [f':c{i}' for i in range(len(csv_cols))]
+            value_sql_parts.extend([':p_batch', ':p_prio', ':p_status', ':p_phone', ':p_data'])
+
+            params['p_batch'] = bid
+            params['p_prio'] = b.priority or 3
+            params['p_status'] = 'pending'
+            params['p_phone'] = phone[:30] if phone else None
+            params['p_data'] = json.dumps(row_clean)
+
+            col_sql = ', '.join(placeholders)
+            val_sql = ', '.join(value_sql_parts)
+
+            stmt = text(f'''
+                INSERT INTO "{staging_table}" ({col_sql})
+                VALUES ({val_sql})
+            ''')
+
+            try:
+                db.session.execute(stmt, params)
+                inserted += 1
+            except Exception as row_err:
+                errors += 1
+                print(f"[UPLOAD] Row insert error: {row_err}")
+                continue
+
+            if inserted % 200 == 0:
+                db.session.flush()
+
+        db.session.commit()
+
+        # Update batch
+        b.source_file = file.filename
+        b.uploaded_rows = inserted
+        if b.status not in ('active',):
+            b.status = 'draft'
+        db.session.commit()
+
+        return jsonify({
+            "ok": True,
+            "message": f"{inserted} leads uploaded to {staging_table}",
+            "inserted": inserted,
+            "errors": errors,
+            "totalRows": total_rows,
+            "filename": file.filename,
+            "stagingTable": staging_table,
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Upload failed: {str(e)}"}), 500
+
+
+
+@batches_bp.get("/<int:bid>/upload-status")
+@jwt_required()
+def upload_status(bid):
+    """Live count of uploaded rows for a batch."""
+    b = Batch.query.get_or_404(bid)
+    staged_count = CrmLead.query.filter_by(batch_id=bid).count()
+    working_count = 0
+    if b.status in ('active', 'paused') and b.crm_table_id:
+        ct = CrmTable.query.get(b.crm_table_id)
+        if ct:
+            wname = working_table_name(ct.name)
+            if table_exists(wname):
+                try:
+                    working_count = db.session.execute(
+                        text(f'SELECT COUNT(*) FROM "{wname}" WHERE batch_id = :bid'),
+                        {'bid': bid}
+                    ).scalar() or 0
+                except Exception:
+                    working_count = 0
+
+    return jsonify({
+        "batchId": bid,
+        "uploadedRows": b.uploaded_rows or 0,
+        "stagedRows": staged_count,
+        "workingRows": working_count,
+        "sourceFile": b.source_file,
+        "status": b.status,
+        "canActivate": staged_count > 0,
+    })
+
+
+# ==================================================
+# ============ START / STOP / RESTART ===============
+# ==================================================
+
+@batches_bp.post("/<int:bid>/start")
+@jwt_required()
+def start_batch(bid):
+    """Activate batch — copy from {campaign}_stagging → {campaign}_working."""
+    b = Batch.query.get_or_404(bid)
+
+    if b.status == 'active':
+        return jsonify({"error": "Batch is already active"}), 400
+
+    if not b.campaign_id:
+        return jsonify({"error": "Batch not linked to campaign"}), 400
+
+    campaign = CampaignFull.query.get(b.campaign_id)
+    if not campaign:
+        return jsonify({"error": "Campaign not found"}), 404
+
+    staging_table = campaign.staging_table
+    working_table = campaign.working_table
+
+    if not staging_table or not table_exists(staging_table):
+        return jsonify({"error": f"Staging table {staging_table} does not exist"}), 400
+    if not working_table:
+        return jsonify({"error": "Campaign has no working table"}), 400
+
+    try:
+        # 1. Ensure working table exists
+        if not table_exists(working_table):
+            db.session.execute(text(f'CREATE TABLE "{working_table}" (LIKE "{staging_table}" INCLUDING DEFAULTS)'))
+            db.session.commit()
+
+        # 2. Clear existing rows for this batch
+        db.session.execute(
+            text(f'DELETE FROM "{working_table}" WHERE batch_id = :bid'),
+            {'bid': bid}
+        )
+        db.session.commit()
+
+        # 3. Count staged rows for this batch
+        staged_count = db.session.execute(
+            text(f"SELECT COUNT(*) FROM \"{staging_table}\" WHERE batch_id = :bid AND (dial_status IS NULL OR dial_status = 'pending')"),
+            {'bid': bid}
+        ).scalar() or 0
+
+        if staged_count == 0:
+            return jsonify({"error": "No leads to activate. Upload file first."}), 400
+
+        # 4. Copy shared columns
+        insp = inspect(db.engine)
+        staging_cols = [c['name'] for c in insp.get_columns(staging_table)]
+        working_cols = [c['name'] for c in insp.get_columns(working_table)]
+        shared = [c for c in staging_cols if c in working_cols]
+
+        col_sql = ', '.join(f'"{c}"' for c in shared)
+
+        sql = text(f'''
+            INSERT INTO "{working_table}" ({col_sql})
+            SELECT {col_sql}
+            FROM "{staging_table}"
+            WHERE batch_id = :bid
+              AND (dial_status IS NULL OR dial_status = 'pending')
+        ''')
+
+        result = db.session.execute(sql, {'bid': bid})
+        inserted = result.rowcount or 0
+        db.session.commit()
+
+        # 5. Update batch
+        working_count = db.session.execute(
+            text(f'SELECT COUNT(*) FROM "{working_table}" WHERE batch_id = :bid'),
+            {'bid': bid}
+        ).scalar() or 0
+
+        b.status = 'active'
+        b.total_records = working_count
+        b.activated_at = datetime.utcnow()
+        b.paused_at = None
+        b.inactivated_at = None
+        b.cached_stats = {
+            "total": working_count,
+            "pending": working_count,
+            "called": 0,
+            "connected": 0,
+            "completed": 0,
+            "failed": 0,
+        }
+        db.session.commit()
+
+        return jsonify({
+            "ok": True,
+            "message": f"Batch started — {inserted} leads loaded into working table",
+            "inserted": inserted,
+            "workingTable": working_table,
+            "workingCount": working_count,
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Start failed: {str(e)}"}), 500
+
+
+
+@batches_bp.post("/<int:bid>/stop")
+@jwt_required()
+def stop_batch(bid):
+    """Deactivate — clear batch rows from working table."""
+    b = Batch.query.get_or_404(bid)
+
+    if b.status not in ('active', 'paused'):
+        return jsonify({"error": "Batch is not active"}), 400
+
+    if not b.crm_table_id:
+        return jsonify({"error": "No CRM table linked"}), 400
+
+    ct = CrmTable.query.get(b.crm_table_id)
+    if not ct:
+        return jsonify({"error": "CRM table not found"}), 404
+
+    working_name = working_table_name(ct.name)
+    deleted = 0
+
+    if table_exists(working_name):
+        try:
+            result = db.session.execute(
+                text(f'DELETE FROM "{working_name}" WHERE batch_id = :bid'),
+                {'bid': bid}
+            )
+            deleted = result.rowcount or 0
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": f"Stop failed: {str(e)}"}), 500
+
+    # Reset staged leads back to pending (keep them for re-activation)
+    CrmLead.query.filter_by(batch_id=bid).update({'dial_status': 'pending'})
+    db.session.commit()
+
+    b.status = 'inactive'
+    b.inactivated_at = datetime.utcnow()
+    b.cached_stats = {"total": b.uploaded_rows or 0, "pending": b.uploaded_rows or 0, "called": 0, "connected": 0, "completed": 0, "failed": 0}
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "message": f"Batch stopped — {deleted} records cleared from working table",
+        "deleted": deleted,
+    })
+
+
+@batches_bp.post("/<int:bid>/restart")
+@jwt_required()
+def restart_batch(bid):
+    """Restart — stop, then start again."""
+    b = Batch.query.get_or_404(bid)
+
+    # Stop first (if active/paused)
+    if b.status in ('active', 'paused'):
+        stop_batch(bid)
+        b = Batch.query.get(bid)
+
+    # Reset leads to pending
+    CrmLead.query.filter_by(batch_id=bid).update({'dial_status': 'pending'})
+    db.session.commit()
+
+    # Start
+    return start_batch(bid)
+
+
+# ==================================================
+# ============ PAUSE / RESUME =======================
+# ==================================================
+
+@batches_bp.post("/<int:bid>/pause")
+@jwt_required()
+def pause_batch(bid):
+    b = Batch.query.get_or_404(bid)
+    if b.status != 'active':
+        return jsonify({"error": "Only active batches can be paused"}), 400
+    b.status = 'paused'
+    b.paused_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"ok": True, "message": "Batch paused"})
+
+
+@batches_bp.post("/<int:bid>/resume")
+@jwt_required()
+def resume_batch(bid):
+    b = Batch.query.get_or_404(bid)
+    if b.status != 'paused':
+        return jsonify({"error": "Only paused batches can be resumed"}), 400
+    b.status = 'active'
+    b.paused_at = None
+    db.session.commit()
+    return jsonify({"ok": True, "message": "Batch resumed"})
+
+
+# ==================================================
+# ============ STATS ================================
+# ==================================================
+
+@batches_bp.get("/<int:bid>/stats")
+@jwt_required()
+def batch_stats(bid):
+    b = Batch.query.get_or_404(bid)
+    stats = b.cached_stats or {}
+    if not stats or request.args.get('refresh') == '1':
+        stats = refresh_batch_cache(bid)
+    return jsonify(stats)
+
+
+# ==================================================
+# ============ LEADS ================================
+# ==================================================
+
+@batches_bp.get("/<int:bid>/leads")
+@jwt_required()
+def batch_leads(bid):
+    """Paginated leads from campaign's working table."""
+    b = Batch.query.get_or_404(bid)
+    page, size, offset = paginate_args()
+
+    if not b.campaign_id:
+        return jsonify({"total": 0, "page": 1, "pages": 1, "rows": []})
+
+    campaign = CampaignFull.query.get(b.campaign_id)
+    if not campaign or not campaign.working_table:
+        return jsonify({"total": 0, "page": 1, "pages": 1, "rows": []})
+
+    working_table = campaign.working_table
+
+    if not table_exists(working_table):
+        return jsonify({"total": 0, "page": 1, "pages": 1, "rows": []})
+
+    total = db.session.execute(
+        text(f'SELECT COUNT(*) FROM "{working_table}" WHERE batch_id = :bid'),
+        {'bid': bid}
+    ).scalar() or 0
+
+    if total == 0:
+        return jsonify({"total": 0, "page": 1, "pages": 1, "rows": []})
+
+    rows_raw = db.session.execute(
+        text(f'SELECT * FROM "{working_table}" WHERE batch_id = :bid ORDER BY id DESC LIMIT :lim OFFSET :off'),
+        {'bid': bid, 'lim': size, 'off': offset}
+    ).mappings().all()
+
+    # Flatten for frontend (uses _id, _phone, _dialStatus format)
+    rows = []
+    for r in rows_raw:
+        rd = dict(r)
+        data_json = rd.get('data') or {}
+        flat = {}
+        flat.update(data_json)
+        flat['_id'] = rd.get('id')
+        flat['_phone'] = rd.get('phone')
+        flat['_dialStatus'] = rd.get('dial_status')
+        flat['_attempts'] = rd.get('total_attempts') or rd.get('attempts') or 0
+        flat['_lastDialAt'] = rd.get('last_dial_at').isoformat() if rd.get('last_dial_at') else None
+        flat['_lastDisposition'] = rd.get('last_disposition')
+        flat['_priority'] = rd.get('priority')
+        rows.append(flat)
+
+    return jsonify({
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+        "rows": rows,
+    })
+
+
+# ==================================================
+# ============ DIALER FETCH =========================
+# ==================================================
+
+@batches_bp.get("/next-lead")
+@jwt_required()
+def next_lead():
+    campaign_id = request.args.get('campaignId', type=int)
+    sub_campaign = request.args.get('subCampaign', type=str)
+
+    batch_q = Batch.query.filter(Batch.status == 'active')
+    if campaign_id:
+        batch_q = batch_q.filter(Batch.campaign_id == campaign_id)
+    if sub_campaign:
+        batch_q = batch_q.filter(Batch.sub_campaign == sub_campaign)
+
+    batches = batch_q.order_by(Batch.priority.asc()).all()
+    if not batches:
+        return jsonify({"lead": None, "reason": "No active batches"})
+
+    batch_ids = [b.id for b in batches]
+
+    lead = db.session.execute(text('''
+        SELECT * FROM ten_crm_leads
+        WHERE batch_id = ANY(:bids)
+          AND dial_status IN ('pending', 'retry')
+        ORDER BY priority ASC, attempts ASC, id ASC
+        LIMIT 1
+    '''), {'bids': batch_ids}).mappings().first()
+
+    if not lead:
+        return jsonify({"lead": None, "reason": "No pending leads"})
+
+    return jsonify({"lead": dict(lead), "batchId": lead['batch_id']})
+
+
+# ==================================================
+# ============ CRM TABLES ===========================
+# ==================================================
+
+@batches_bp.get("/crm-tables-for-batch")
+@jwt_required()
+def crm_tables_for_batch():
+    tables = CrmTable.query.all()
+    out = []
+    for t in tables:
+        out.append({
+            "id": t.id,
+            "name": t.name,
+            "displayName": t.display_name or t.name,
+            "phoneColumn": get_phone_column(t),
+            "columns": t.columns or [],
+        })
+    return jsonify(out)
+
+
+# ==================================================
+# ============ TEMPLATE DOWNLOAD ====================
+# ==================================================
+
+@batches_bp.get("/<int:bid>/template")
+@jwt_required()
+def download_template(bid):
+    """
+    Download CSV template for batch upload.
+    Headers = CRM table columns (which auto-created campaign tables).
+    """
+    from flask import Response
+    import csv, io
+
+    b = Batch.query.get_or_404(bid)
+
+    if not b.crm_table_id:
+        return jsonify({"error": "CRM table not assigned"}), 400
+
+    ct = CrmTable.query.get(b.crm_table_id)
+    if not ct:
+        return jsonify({"error": "CRM table not found"}), 404
+
+    # Get columns from CRM table definition
+    cols = ct.columns or []
+    col_names = [c.get('name') for c in cols if c.get('name')]
+
+    if not col_names:
+        return jsonify({"error": "CRM table has no columns"}), 400
+
+    # Build CSV with headers + 2 sample rows
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(col_names)
+
+    # Sample rows
+    sample = []
+    for c in cols:
+        ctype = (c.get('type') or 'varchar').lower()
+        if ctype == 'int':
+            sample.append('123')
+        elif ctype == 'date':
+            sample.append('2025-01-01')
+        elif ctype == 'boolean':
+            sample.append('true')
+        else:
+            sample.append('sample_value')
+    writer.writerow(sample)
+    writer.writerow([''] * len(col_names))
+
+    # Sanitize filename
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', b.name or 'batch')
+    filename = f"template_{safe_name}.csv"
+
+    return Response(
+        buf.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'},
+    )

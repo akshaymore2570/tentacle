@@ -25,8 +25,6 @@ import BatchMaintenance from './pages/BatchMaintenance'
 import BatchList from './pages/BatchList'
 import BatchBuilder from './pages/BatchBuilder'
 import BatchData from './pages/BatchData'
-import DispositionsList from './pages/DispositionsList'
-import DispositionBuilder from './pages/DispositionBuilder'
 import License from './pages/License'
 
 
@@ -64,9 +62,6 @@ function AppLayout() {
             <Route path="/crm-table/new" element={<CrmTableBuilder showToast={setToast} />} />
             <Route path="/crm-table/:id/edit" element={<CrmTableBuilder showToast={setToast} />} />
             <Route path="/crm-table/:id" element={<CrmTableData showToast={setToast} />} />
-                        <Route path="/dispositions" element={<DispositionsList showToast={setToast} />} />
-            <Route path="/dispositions/new" element={<DispositionBuilder showToast={setToast} />} />
-            <Route path="/dispositions/:id/edit" element={<DispositionBuilder showToast={setToast} />} />
             <Route path="/users" element={<UserManagement showToast={setToast} />} />
             <Route path="/batch-maintenance" element={<BatchMaintenance />} />
             <Route path="/batch-maintenance/create" element={<BatchBuilder showToast={setToast} />} />

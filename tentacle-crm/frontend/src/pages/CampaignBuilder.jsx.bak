@@ -6,6 +6,7 @@ const emptyDisposition = () => ({
   dispositionType: '', dispositionName: '', description: '',
   status: 'ACTIVE', autoDisposition: '',
   churnType: 'non-churn'
+  churnType: 'non-churn'
 })
 
 const emptySkill = () => ({
@@ -290,8 +291,7 @@ export default function CampaignBuilder({ showToast }) {
             <div style={{ padding: '12px 12px' }}>Disposition Name</div>
             <div style={{ padding: '12px 12px' }}>Description</div>
             <div style={{ padding: '12px 12px' }}>Status</div>
-            <div style={{ padding: '12px 12px' }}>Auto Disposition</div>
-            <div style={{ padding: '12px 12px' }}>Churn Type</div>
+            <div style={{ padding: '12px 12px' }}>Select Auto Disposition</div>
           </div>
 
           {/* Rows or empty state */}
@@ -309,7 +309,7 @@ export default function CampaignBuilder({ showToast }) {
             form.dispositions.map((d, i) => (
               <div key={i} style={{
                 display: 'grid',
-                gridTemplateColumns: '40px 1.5fr 1.5fr 2fr 1fr 1.5fr 1.2fr',
+                gridTemplateColumns: '40px 1.5fr 1.5fr 2fr 1fr 1.5fr',
                 borderBottom: i < form.dispositions.length - 1 ? '1px solid #f0f2f5' : 'none',
                 alignItems: 'center',
               }}>
@@ -352,28 +352,6 @@ export default function CampaignBuilder({ showToast }) {
                     onChange={(e) => updateDisposition(i, { autoDisposition: e.target.value })}
                     placeholder="Auto"
                     style={{ ...input, padding: '6px 10px', fontSize: '0.82rem' }} />
-                </div>
-                <div style={{ padding: '6px 8px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'nowrap' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    <input
-                      type="radio"
-                      name={`churn-${i}`}
-                      checked={(d.churnType || 'non-churn') === 'churn'}
-                      onChange={() => updateDisposition(i, { churnType: 'churn' })}
-                      style={{ cursor: 'pointer' }}
-                    />
-                    Churn
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    <input
-                      type="radio"
-                      name={`churn-${i}`}
-                      checked={(d.churnType || 'non-churn') === 'non-churn'}
-                      onChange={() => updateDisposition(i, { churnType: 'non-churn' })}
-                      style={{ cursor: 'pointer' }}
-                    />
-                    Non-Churn
-                  </label>
                 </div>
               </div>
             ))

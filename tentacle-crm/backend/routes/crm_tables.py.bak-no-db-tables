@@ -45,12 +45,40 @@ def column_exists(tname, cname):
 
 
 def ensure_table(crm_table):
-    """
-    DEPRECATED — CRM Tables are now metadata only.
-    Actual data lives in the campaign's staging table.
-    This function does nothing for backward compatibility.
-    """
-    return None
+    tname = crm_table.staging_table_name()
+    if not tname:
+        raise ValueError("Invalid table name")
+
+    columns = crm_table.columns or []
+    safe_cols = []
+    seen = set()
+    for c in columns:
+        cname = sanitize(c.get('name'))
+        if not cname or cname == 'id':
+            continue
+        if cname in seen:
+            i = 2
+            while f"{cname}_{i}" in seen:
+                i += 1
+            cname = f"{cname}_{i}"
+        seen.add(cname)
+        safe_cols.append((cname, sql_type_for(c.get('type'))))
+
+    if not table_exists(tname):
+        col_defs = ['id SERIAL PRIMARY KEY', 'created_at TIMESTAMP DEFAULT NOW()', 'updated_at TIMESTAMP DEFAULT NOW()']
+        for cname, ctype in safe_cols:
+            col_defs.append(f'"{cname}" {ctype}')
+        sql = f'CREATE TABLE "{tname}" ({", ".join(col_defs)})'
+        db.session.execute(text(sql))
+        db.session.commit()
+    else:
+        for cname, ctype in safe_cols:
+            if not column_exists(tname, cname):
+                db.session.execute(text(f'ALTER TABLE "{tname}" ADD COLUMN "{cname}" {ctype}'))
+        db.session.commit()
+
+    return tname
+
 
 # ================================================
 # ============ ROUTES =============================
@@ -133,7 +161,10 @@ def create_table():
     db.session.add(t)
     db.session.commit()
 
-
+    try:
+        ensure_table(t)
+    except Exception as e:
+        return jsonify({'error': f'Table saved but DB creation failed: {e}'}), 500
 
     return jsonify(t.to_dict()), 201
 
@@ -165,7 +196,10 @@ def update_table(tid):
     if 'subCampaign' in data: t.sub_campaign = data['subCampaign'] or None
     db.session.commit()
 
-
+    try:
+        ensure_table(t)
+    except Exception as e:
+        return jsonify({'error': f'Saved but DB sync failed: {e}'}), 500
 
     return jsonify(t.to_dict())
 

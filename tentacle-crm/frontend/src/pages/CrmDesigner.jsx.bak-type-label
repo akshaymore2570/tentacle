@@ -645,7 +645,7 @@ export default function CrmDesigner({ showToast }) {
                           style={{ fontSize: '0.78rem', fontWeight: 700, color: theme.fieldLabel || 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', cursor: 'text' }}
                           title="Double-click to edit">
                           <span>
-                            {f.label || (!preview && <span style={{ opacity: 0.4, fontStyle: 'italic' }}>{f.type}</span>)}
+                            {f.label || <span style={{ opacity: 0.4, fontStyle: 'italic' }}>{f.type}</span>}
                             {f.required && <span style={{ color: '#e74c3c', marginLeft: 3 }}>*</span>}
                           </span>
                           {isMapped && !preview && (

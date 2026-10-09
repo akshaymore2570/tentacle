@@ -626,9 +626,7 @@ export default function CrmDesigner({ showToast }) {
                       background: theme.fieldBg,
                       border: preview
                         ? `1px solid ${theme.fieldBorder}`
-                        : preview
-                          ? `1px solid ${theme.fieldBorder}`
-                          : isSel ? `2px solid ${theme.crmAccent}` : isMapped ? `1.5px solid var(--primary)` : `1px solid ${adjustColor(theme.crmPrimary, 0.7)}`,
+                        : isSel ? `2px solid ${theme.crmAccent}` : isMapped ? `1.5px solid var(--primary)` : `1px solid ${adjustColor(theme.crmPrimary, 0.7)}`,
                       borderRadius: 8, padding: 12, cursor: preview ? 'default' : 'move',
                       zIndex: isSel ? 50 : 10,
                       boxShadow: preview ? '0 1px 3px rgba(0,0,0,0.06)' : isSel ? '0 0 0 3px rgba(230,126,34,0.2), 0 8px 20px rgba(0,0,0,0.12)' : '0 1px 3px rgba(0,0,0,0.05)',
@@ -645,7 +643,7 @@ export default function CrmDesigner({ showToast }) {
                           style={{ fontSize: '0.78rem', fontWeight: 700, color: theme.fieldLabel || 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', cursor: 'text' }}
                           title="Double-click to edit">
                           <span>
-                            {f.label || (!preview && <span style={{ opacity: 0.4, fontStyle: 'italic' }}>{f.type}</span>)}
+                            {f.label || <span style={{ opacity: 0.4, fontStyle: 'italic' }}>{f.type}</span>}
                             {f.required && <span style={{ color: '#e74c3c', marginLeft: 3 }}>*</span>}
                           </span>
                           {isMapped && !preview && (
